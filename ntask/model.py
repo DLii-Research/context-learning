@@ -67,7 +67,7 @@ class NTaskModel(Model):
         return tf.keras.losses.mean_squared_error(np.zeros(len(context_delta)), context_delta)
         
     
-    def _custom_forward_pass(self, dataset, epoch_grads):
+    def _custom_forward_pass(self, x_train, y_train, epoch_grads):
         """
         This is the training forward pass for an entire epoch
 
@@ -82,7 +82,11 @@ class NTaskModel(Model):
         # Tensorflow 2 style training -- info can be found here: https://www.tensorflow.org/guide/effective_tf2 
         # This is similar to model.fit(), however this is a custom training loop -- ie. it does things differently than model.fit()
         # look at each input and label (there are 4 for the logic gates)
-        for x, y in dataset:
+        for i in range(len(x_train)):
+            
+            x = x_train[i]
+            y = y_train[i]
+            
             with tf.GradientTape() as tape:
                 predictions = self(x, training=True) # Forward pass
                 loss = self.loss_fn(y, predictions) # Get the loss
@@ -91,7 +95,7 @@ class NTaskModel(Model):
             sum_loss += loss    
             
             # Extract the gradients for the loss of the current sample
-            gradients = tape.gradient(loss, self.trainable_variables)
+            gradients = tape.gradient(loss, model.trainable_variables)
             
             # Collect the gradients from each sample in the dataset for the epoch
             epoch_grads.append(gradients)
@@ -103,7 +107,7 @@ class NTaskModel(Model):
         avg_loss_for_epoch = sum_loss / len(dataset)
                 
         
-    def fit(self, dataset, n_epochs, progress=False, explicit_contexts=None):
+    def fit(self, x_train, y_train, n_epochs, progress=False, explicit_contexts=None):
         
         # Explicit context learning: specify the contexts for ecah of the layers. None=dynamic
         if explicit_contexts is not None:
@@ -128,7 +132,7 @@ class NTaskModel(Model):
                 self.layers[idx].context_loss = 0.0
             
             # Perform a forward pass
-            self._custom_forward_pass(dataset, epoch_grads)
+            self._custom_forward_pass(x_train, y_train, epoch_grads)
             
             # Iterate backwards over the context layers. If a context switch occurs, don't check any other layers
             switched = False
@@ -150,7 +154,7 @@ class NTaskModel(Model):
                 epoch += 1
                 self.total_epochs += 1
                 for grads in epoch_grads:
-                    self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
+                    self.optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
                 for idx in self.context_layers[::-1]:
                     for t in range(self.layers[idx].num_tasks):
@@ -160,4 +164,4 @@ class NTaskModel(Model):
     def plot_atr_values(self):
         for idx in self.context_layers:
             n = self.layers[idx].num_tasks
-            plotFrames(f"ATR Values for Context Layer {idx}", *self.atr_frames[idx].values(), labels=[i for i in range(n)])
+            plotFrames(f"ATR Values for Context Layer {idx}", *model.atr_frames[idx].values(), labels=[i for i in range(n)])

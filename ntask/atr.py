@@ -1,3 +1,5 @@
+import numpy as np
+
 class AtrModel:
     def __init__(self, num_tasks=1, task_switch_threshold=0.0, is_dynamic=False, task_add_threshold=0.0, max_num_tasks=1):
         # Parameters
@@ -33,6 +35,7 @@ class AtrModel:
         """
         Switch to a new task
         """
+        print("Switching...")
         # If we have exhausted the context list, pick the one with the lowest loss
         if self.num_seq_switches >= self.num_tasks:
             # Find the context with the lowest loss
@@ -68,7 +71,7 @@ class AtrModel:
         if dynamic_switch and self.should_switch(context_loss):
             
             # Update the tracked context loss
-            self.context_losses[self.hot_context_idx] = self.atr_values[self.hot_context_idx] - context_loss
+            self.context_losses[self.hot_context_idx] = context_loss
             
             # Count the sequential sequence switches
             self.num_seq_switches += 1
@@ -124,7 +127,7 @@ class AtrModel:
         """Locate the context index with the best fit"""
         # return np.argmax(np.subtract(self.atr_values, self.context_losses))
         # return np.argmin(np.abs(np.subtract(self.context_losses, self.atr_values)))
-        return np.argmax(self.context_losses)
+        return np.argmax(np.subtract(self.atr_values, self.context_losses))
     
     def should_switch(self, context_loss):
         """Determine if the context should switch"""
@@ -134,8 +137,7 @@ class AtrModel:
     def should_add_context(self, context_loss, best_fit_context_idx):
         """Determine if a new context should be added"""
         print("Best context loss...", self.context_losses[best_fit_context_idx])
-        input
-        return self.context_losses[best_fit_context_idx] > self.add_threshold
+        return self.atr_values[self.hot_context_idx] - self.context_losses[best_fit_context_idx] < self.add_threshold
     
     
 class AtrMovingAverage(AtrModel):

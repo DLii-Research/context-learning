@@ -6,7 +6,6 @@ class Context(Layer):
     RESULT_UPDATED  = 0 # The ATR model was updated successfully
     RESULT_SWITCHED = 1 # A task switch was triggered in the ATR
     RESULT_ADDED    = 2 # A new task was added to the ATR model
-    RESULT_REMOVED  = 4 # A task was removed from the ATR model
     
     def __init__(self, atr_model):
         super(Context, self).__init__()
@@ -93,8 +92,6 @@ class Context(Layer):
                 # Determine if a new task was added or removed
                 if self.num_tasks < self.atr_model.num_tasks:
                     return Context.RESULT_ADDED | Context.RESULT_SWITCHED
-                else:
-                    return Context.RESULT_REMOVED | Context.RESULT_SWITCHED
             
             # A task switch occurred, no ATR updates
             return Context.RESULT_SWITCHED
