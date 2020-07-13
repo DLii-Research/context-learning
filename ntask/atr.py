@@ -1,3 +1,4 @@
+import tensorflow as tf
 import numpy as np
 
 class AtrModel:
@@ -117,6 +118,12 @@ class AtrModel:
         return self.hot_context_idx
     
     # Overridable ---------------------------------------------------------------------------------
+    
+    def context_loss_fn(self, context_delta):
+        # Calculate Context Error
+        # Keras MSE must have both args be arrs of floats, if one or both are arrs of ints, the output will be rounded to an int
+        # This is how responsible the context layer was for the loss
+        return tf.keras.losses.mean_squared_error(np.zeros(len(context_delta)), context_delta)
     
     def initial_atr_value(self):
         """Determine the initial value for an ATR"""

@@ -77,6 +77,11 @@ class Context(Layer):
         return self.atr_model.next_context()
     
     
+    def add_context_loss(self, context_loss):
+        """Accumulate context loss"""
+        self.context_loss += self.atr_model.context_loss_fn(context_loss)
+    
+    
     def update_and_switch(self, dynamic_switch=True, verbose=1):
         """
         Update ATR values and switch contexts if necessary.

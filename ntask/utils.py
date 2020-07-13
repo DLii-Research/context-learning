@@ -60,6 +60,6 @@ def plotFrames(title, *frameGroups, labels):
         keys = tuple(group.keys())
         t = np.arange(keys[0], keys[-1] + 1, 1)
         ax.plot(t, list(group.values()), label=labels[i])
-    ax.set(xlabel='Episode', ylabel='Value', title=title)
+    ax.set(xlabel='Epoch', ylabel='Value', title=title)
     ax.grid()
     plt.legend()

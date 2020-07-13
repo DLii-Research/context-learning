@@ -62,13 +62,10 @@ class NTaskModel(Model):
         # Calculate delta at n-task layer
         context_delta = np.dot(delta_at_next_layer, transpose_of_weights_at_next_layer).astype(np.float)
         
-        # Calculate Context Error
-        # Keras MSE must have both args be arrs of floats, if one or both are arrs of ints, the output will be rounded to an int
-        # This is how responsible the context layer was for the loss
-        return tf.keras.losses.mean_squared_error(np.zeros(len(context_delta)), context_delta)
+        return context_delta
         
     
-    def _custom_forward_pass(self, x_train, y_train, epoch_grads, batch_size):
+    def _custom_forward_pass(self, x_train, y_train, batch_size):
         """
         This is the training forward pass for an entire epoch
 
@@ -76,6 +73,8 @@ class NTaskModel(Model):
         & NOTE that this does not apply the gradients ie. this does not do a weight update/learn
 
         """
+        
+        grads = None
         
         # Calculate the total number of batches that need to be processed
         num_batches = int(np.ceil(len(x_train) / batch_size))
@@ -96,14 +95,19 @@ class NTaskModel(Model):
             # Extract the gradients for the loss of the current sample
             gradients = tape.gradient(loss, self.trainable_variables)
             
-            # Collect the gradients from each sample in the dataset for the epoch
-            epoch_grads.append(gradients)
+            # Add up the total gradients
+            if grads is None:
+                grads = gradients
+            else:
+                grads = np.add(grads, gradients)
             
             for context_layer_idx in self.context_layers:
-                self.layers[context_layer_idx].context_loss += self._calc_context_loss(context_layer_idx, gradients)
+                self.layers[context_layer_idx].add_context_loss(self._calc_context_loss(context_layer_idx, gradients))
+                
+        return grads
                 
         
-    def fit(self, x_train, y_train, n_epochs, shuffle=True, progress=False, explicit_contexts=None, batch_size=None, verbose=1):
+    def fit(self, x_train, y_train, n_epochs=1, shuffle=True, progress=False, explicit_contexts=None, batch_size=None, verbose=1):
         
         # Explicit context learning: specify the contexts for ecah of the layers. None=dynamic
         if explicit_contexts is not None:
@@ -129,13 +133,12 @@ class NTaskModel(Model):
             if progress:
                 display_progress(epoch / n_epochs, title=str([self.layers[i].get_hot_context() for i in self.context_layers]))
             
-            # initialize the values for the loop
-            epoch_grads = []
+            # Reset the context loss
             for idx in self.context_layers:
                 self.layers[idx].context_loss = 0.0
             
             # Perform a forward pass
-            self._custom_forward_pass(x_train, y_train, epoch_grads, batch_size)
+            grads = self._custom_forward_pass(x_train, y_train, batch_size)
             
             # Iterate backwards over the context layers. If a context switch occurs, don't check any other layers
             switched = False
@@ -156,8 +159,9 @@ class NTaskModel(Model):
             if not switched:
                 epoch += 1
                 self.total_epochs += 1
-                for grads in epoch_grads:
-                    self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
+                
+                # Apply the gradients
+                self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
 
                 for idx in self.context_layers[::-1]:
                     for t in range(self.layers[idx].num_tasks):
