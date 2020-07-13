@@ -1,4 +1,6 @@
 from tensorflow.keras.layers import Layer, Input, Dense
+import numpy as np
+
 from .utils import hrr, hrrs, circ_conv
 
 class Context(Layer):
@@ -75,13 +77,13 @@ class Context(Layer):
         return self.atr_model.next_context()
     
     
-    def update_and_switch(self, dynamic_switch=True):
+    def update_and_switch(self, dynamic_switch=True, verbose=1):
         """
         Update ATR values and switch contexts if necessary.
         Returns True if no context switch occurs; False otherwise
         """
         # Update the ATR values. If a task switch occurs, check if a task was added...
-        if not self.atr_model.update_and_switch(self.context_loss, dynamic_switch):
+        if not self.atr_model.update_and_switch(self.context_loss, dynamic_switch, verbose):
             
             # Check if the number of tasks was dynamically manipulated
             if self.num_tasks != self.atr_model.num_tasks:

@@ -31,15 +31,20 @@ class AtrModel:
         self.context_losses.append(0.0)
     
     
-    def switch_contexts(self, context_loss):
+    def switch_contexts(self, context_loss, verbose=1):
         """
         Switch to a new task
         """
-        print("Switching...")
+        if verbose:
+            print("Switching... context loss:", context_loss)
+            
         # If we have exhausted the context list, pick the one with the lowest loss
         if self.num_seq_switches >= self.num_tasks:
             # Find the context with the lowest loss
             best_fit_idx = self.find_best_fit_context()
+            
+            if verbose:
+                print("Best context loss...", self.context_losses[best_fit_idx])
             
             # Check if a new context should be added
             if self.is_dynamic and self.num_tasks < self.max_num_tasks and self.should_add_context(context_loss, best_fit_idx):
@@ -48,23 +53,25 @@ class AtrModel:
                 
                 # Switch to the new context
                 self.hot_context_idx = self.num_tasks - 1
-                print(f"Task switched (added new task): {self.hot_context_idx}")
+                if verbose:
+                    print(f"Task switched (added new task): {self.hot_context_idx}")
                 
             else:
                 # Change to the new context
                 self.hot_context_idx = best_fit_idx
-                print(f"Task switched (found best): {self.hot_context_idx}")
+                if verbose:
+                    print(f"Task switched (found best): {self.hot_context_idx}")
 
                 # Update the ATR value
-                # @WARN This is probably not the best way to do this... but it works, so...
-                self.atr_values[self.hot_context_idx] = self.context_losses[self.hot_context_idx]
+                self.update_atr_value(self.context_losses[self.hot_context_idx], switched=True)
 
         else:
             self.next_context()
-            print(f"Task switched to: {self.hot_context_idx}")
+            if verbose:
+                print(f"Task switched to: {self.hot_context_idx}")
     
     
-    def update_and_switch(self, context_loss, dynamic_switch=True):
+    def update_and_switch(self, context_loss, dynamic_switch=True, verbose=1):
         """Perform an update on the ATR model"""
         
         # Do we need to switch contexts?
@@ -77,13 +84,13 @@ class AtrModel:
             self.num_seq_switches += 1
             
             # Switch to the new context
-            self.switch_contexts(context_loss)
+            self.switch_contexts(context_loss, verbose)
             
             # A switch occurred, no ATR updates happened
             return False
         
         # Update the ATR values
-        self.update_atr_value(context_loss)
+        self.update_atr_value(context_loss, switched=False)
         
         # Reset the sequential switch counter
         self.num_seq_switches = 0
@@ -113,33 +120,41 @@ class AtrModel:
     
     def initial_atr_value(self):
         """Determine the initial value for an ATR"""
-        return 1.0
+        return None
     
     def initialize_atr_values(self, num_tasks):
         """Initialize the `atr_values` parameter"""
         self.atr_values = [self.initial_atr_value() for i in range(num_tasks)]
         
-    def update_atr_value(self, context_loss):
+    def update_atr_value(self, context_loss, switched):
         """Update the ATR value"""
-        self.atr_values[self.hot_context] = context_loss
+        self.atr_values[self.hot_context_idx] = context_loss
     
     def find_best_fit_context(self):
         """Locate the context index with the best fit"""
-        # return np.argmax(np.subtract(self.atr_values, self.context_losses))
-        # return np.argmin(np.abs(np.subtract(self.context_losses, self.atr_values)))
         return np.argmax(np.subtract(self.atr_values, self.context_losses))
-    
+         
     def should_switch(self, context_loss):
         """Determine if the context should switch"""
+        # If this context has not been trained on yet, it's OK
+        if self.atr_values[self.hot_context_idx] is None:
+            return False
+        
+        # If the context loss exceeds the threshold
         delta = self.atr_values[self.hot_context_idx] - context_loss
         return delta < self.switch_threshold
     
     def should_add_context(self, context_loss, best_fit_context_idx):
-        """Determine if a new context should be added"""
-        print("Best context loss...", self.context_losses[best_fit_context_idx])
+        """
+        Determine if a new context should be added
+        Note: This is only checked after a switch has been determined
+        """
         return self.atr_values[self.hot_context_idx] - self.context_losses[best_fit_context_idx] < self.add_threshold
     
     
 class AtrMovingAverage(AtrModel):
-    def update_atr_value(self, context_loss):
-        self.atr_values[self.hot_context_idx] = (self.atr_values[self.hot_context_idx] + context_loss) / 2.0
+    def update_atr_value(self, context_loss, switched):
+        if switched or self.atr_values[self.hot_context_idx] is None:
+            self.atr_values[self.hot_context_idx] = context_loss
+        else:
+            self.atr_values[self.hot_context_idx] = (self.atr_values[self.hot_context_idx] + context_loss) / 2.0

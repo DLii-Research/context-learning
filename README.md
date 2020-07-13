@@ -9,3 +9,22 @@ This repository contains various experiments using n-task layers and models
 When working with n-task, context switching is determined by achieving a large enough loss delta that exceeds a threshold. This is calculated using the expected loss vs. the actual loss (`delta = atr_value - context_loss`). If this value exceeds a threshold (less than zero), then a task switch is triggered.
 
 Similarly, dynamic n-task also looks at this delta. If the delta exceeds the task switch case in all contexts, and the best fitting context (`max(atr_value - context_loss)`) is less than the specified threshold, a new task is added.
+
+## TODO
+
+- Refactor model code
+  - [Later:]
+      - Watch for flatten layers (and other special layers). Gradients aren't calculated for them.
+      - Evaluate doesn't work for some reason...
+  
+  - Model building doesn't quite follow convention...
+  - Investigate updating the training and predict functions on their own
+  - Integrate the ability to provide feedback with predictions to enable the switching mechanisms
+  - Investigate methods of updating multiple context layers in a single neural network
+    - Should switching on one layer prevent switching on another in a given context?
+
+- Investigate moving averages of context loss for dynamic thresholds
+  - these thresholds could work with stochastic datasets
+  - Harmonic mean
+  - [!] Require finding best-fitting context upon switch
+      - This implementaiton would yield more reliable context switching with dynamic thresholds

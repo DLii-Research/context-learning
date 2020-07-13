@@ -1,6 +1,7 @@
 from collections import defaultdict
 import numpy as np
 import random
+import sklearn
 import tensorflow as tf
 from tensorflow.keras import Model
 from .utils import display_progress, plotFrames
@@ -67,7 +68,7 @@ class NTaskModel(Model):
         return tf.keras.losses.mean_squared_error(np.zeros(len(context_delta)), context_delta)
         
     
-    def _custom_forward_pass(self, x_train, y_train, epoch_grads):
+    def _custom_forward_pass(self, x_train, y_train, epoch_grads, batch_size):
         """
         This is the training forward pass for an entire epoch
 
@@ -76,38 +77,33 @@ class NTaskModel(Model):
 
         """
         
-        # Initialize the sum loss
-        sum_loss = 0
+        # Calculate the total number of batches that need to be processed
+        num_batches = int(np.ceil(len(x_train) / batch_size))
         
         # Tensorflow 2 style training -- info can be found here: https://www.tensorflow.org/guide/effective_tf2 
         # This is similar to model.fit(), however this is a custom training loop -- ie. it does things differently than model.fit()
         # look at each input and label (there are 4 for the logic gates)
-        for i in range(len(x_train)):
+        for start, end in ((s*batch_size, (s + 1)*batch_size) for s in range(num_batches)):
             
-            x = x_train[i]
-            y = y_train[i]
+            # Slice into batch
+            x = x_train[start:end]
+            y = y_train[start:end]
             
             with tf.GradientTape() as tape:
                 predictions = self(x, training=True) # Forward pass
                 loss = self.loss_fn(y, predictions) # Get the loss
-                
-            # Accumulate the loss
-            sum_loss += loss    
             
             # Extract the gradients for the loss of the current sample
-            gradients = tape.gradient(loss, model.trainable_variables)
+            gradients = tape.gradient(loss, self.trainable_variables)
             
             # Collect the gradients from each sample in the dataset for the epoch
             epoch_grads.append(gradients)
             
             for context_layer_idx in self.context_layers:
                 self.layers[context_layer_idx].context_loss += self._calc_context_loss(context_layer_idx, gradients)
-            
-        # Average loss for the epoch
-        avg_loss_for_epoch = sum_loss / len(dataset)
                 
         
-    def fit(self, x_train, y_train, n_epochs, progress=False, explicit_contexts=None):
+    def fit(self, x_train, y_train, n_epochs, shuffle=True, progress=False, explicit_contexts=None, batch_size=None, verbose=1):
         
         # Explicit context learning: specify the contexts for ecah of the layers. None=dynamic
         if explicit_contexts is not None:
@@ -118,6 +114,13 @@ class NTaskModel(Model):
                     self.layers[idx].set_hot_context(explicit_contexts[i])
         else:
             explicit_contexts = [None for x in self.context_layers]
+        
+        # Determine the default batch size
+        if batch_size is None:
+            batch_size = len(x_train)
+        
+        # Shuffle the dataset
+        x_train, y_train = sklearn.utils.shuffle(x_train, y_train)
         
         epoch = 0
         while epoch < n_epochs:
@@ -132,7 +135,7 @@ class NTaskModel(Model):
                 self.layers[idx].context_loss = 0.0
             
             # Perform a forward pass
-            self._custom_forward_pass(x_train, y_train, epoch_grads)
+            self._custom_forward_pass(x_train, y_train, epoch_grads, batch_size)
             
             # Iterate backwards over the context layers. If a context switch occurs, don't check any other layers
             switched = False
@@ -144,7 +147,7 @@ class NTaskModel(Model):
                 dynamic_switch = explicit_contexts[i] is None
                 
                 # Update the layer and indicate if a task switch occurred
-                if context.update_and_switch(dynamic_switch) & Context.RESULT_SWITCHED:
+                if context.update_and_switch(dynamic_switch, verbose=verbose) & Context.RESULT_SWITCHED:
                     # A task switch occurred, don't update any other layers/weights
                     switched = True
                     break
@@ -154,14 +157,22 @@ class NTaskModel(Model):
                 epoch += 1
                 self.total_epochs += 1
                 for grads in epoch_grads:
-                    self.optimizer.apply_gradients(zip(grads, model.trainable_variables))
+                    self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
 
                 for idx in self.context_layers[::-1]:
                     for t in range(self.layers[idx].num_tasks):
                         self.atr_frames[idx][t][self.total_epochs] = self.layers[idx].atr_model.atr_values[t]
-                    
+                        
+                # Reshuffle the dataset
+                x_train, y_train = sklearn.utils.shuffle(x_train, y_train)
+                        
+                        
+    def get_contexts(self):
+        """Get the hot context from all context layers"""
+        return [self.layers[i].get_hot_context() for i in self.context_layers]
+            
                     
     def plot_atr_values(self):
         for idx in self.context_layers:
             n = self.layers[idx].num_tasks
-            plotFrames(f"ATR Values for Context Layer {idx}", *model.atr_frames[idx].values(), labels=[i for i in range(n)])
+            plotFrames(f"ATR Values for Context Layer {idx}", *self.atr_frames[idx].values(), labels=[i for i in range(n)])
