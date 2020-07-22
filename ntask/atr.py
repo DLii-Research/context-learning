@@ -100,7 +100,7 @@ class AtrModel:
         return True
 
 
-    def get_hot_context():
+    def get_hot_context(self):
         """Get the active context index"""
         return self.hot_context_idx
     
@@ -117,7 +117,14 @@ class AtrModel:
         self.set_hot_context((self.hot_context_idx + 1) % self.num_tasks)
         return self.hot_context_idx
     
+    
+    def get_value(self):
+        return self.atr_values[self.hot_context_idx]
+    
     # Overridable ---------------------------------------------------------------------------------
+    
+    def on_switch(self):
+        pass
     
     def context_loss_fn(self, context_delta):
         # Calculate Context Error

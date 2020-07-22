@@ -8,6 +8,11 @@ import tensorflow as tf
 import time
 
 
+def copy_metric(metric):
+    """Copy a new metric instance from an existing instance"""
+    return tf.keras.metrics.deserialize(tf.keras.metrics.serialize(metric))
+
+
 # Display a progress bar. (clears all output)
 # @param {Integer} progress
 # @param {String}  title
@@ -54,12 +59,16 @@ def logmod(x):
     return np.sign(x)*np.log(abs(x) + 1)
 
 
-def plotFrames(title, *frameGroups, labels):
+def plot(title, labels, *frameGroups):
     fig, ax = plt.subplots()
-    for i, group in enumerate(frameGroups):
-        keys = tuple(group.keys())
-        t = np.arange(keys[0], keys[-1] + 1, 1)
-        ax.plot(t, list(group.values()), label=labels[i])
-    ax.set(xlabel='Epoch', ylabel='Value', title=title)
+    plotFrames(ax, title, labels, *frameGroups, xlabel="Epoch", ylabel="Value")
     ax.grid()
     plt.legend()
+    
+    
+def plotFrames(ax, title, labels, *frameGroups, xlabel=None, ylabel=None):
+    for i, frames in enumerate(frameGroups):
+        keys = tuple(frames.keys() if type(frames) == dict else range(len(frames)))
+        t = np.arange(keys[0], keys[-1] + 1, 1)
+        ax.plot(t, list(frames.values()), label=(labels[i] if labels else None))
+    ax.set(xlabel=xlabel, ylabel=ylabel, title=title)

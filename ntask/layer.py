@@ -80,9 +80,14 @@ class Context(Layer):
     def add_context_loss(self, context_loss):
         """Accumulate context loss"""
         self.context_loss += self.atr_model.context_loss_fn(context_loss)
+        
+        
+    def update_kernel(self):
+        if self.num_tasks < self.atr_model.num_tasks:
+            self._setup_hrr_weights()
     
     
-    def update_and_switch(self, dynamic_switch=True, verbose=1):
+    def update_and_switch(self, dynamic_switch=True, verbose=1, do_kernel_update=True):
         """
         Update ATR values and switch contexts if necessary.
         Returns True if no context switch occurs; False otherwise
@@ -93,8 +98,9 @@ class Context(Layer):
             # Check if the number of tasks was dynamically manipulated
             if self.num_tasks != self.atr_model.num_tasks:
                 
-                # Re-initialize the
-                self._setup_hrr_weights()
+                # Re-initialize the weights by adding another context
+                if do_kernel_update:
+                    self.update_kernel()
                 
                 # Determine if a new task was added or removed
                 if self.num_tasks < self.atr_model.num_tasks:
