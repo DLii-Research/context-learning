@@ -3,7 +3,6 @@ from tensorflow.keras.layers import Layer
 
 import numpy as np
 
-from .atrs import AtrModel
 from .utils import hrrs, circ_conv
 
 class Context(Layer):
@@ -56,7 +55,7 @@ class Context(Layer):
         return circ_conv(inputs, context_hrr)
     
     
-    def update_and_switch(self, dynamic_switch, verbose):
+    def update_and_switch(self, epoch, dynamic_switch, verbose):
         """
         Update ATR values and switch contexts if necessary.
         Returns True if no context switch occurs; False otherwise
@@ -66,14 +65,13 @@ class Context(Layer):
             return True
         
         # Update the ATR madel
-        result = self._atr_model.update_and_switch(self.context_loss, dynamic_switch, verbose)
+        result = self._atr_model.update_and_switch(epoch, self.context_loss, dynamic_switch, verbose)
         
         # Clear the context loss when we're done
-        
         self.clear_context_loss()
         
         # Did the ATR model update or switch?
-        return result == AtrModel.RESULT_UPDATED
+        return result
         
     
     #TODO Context adding

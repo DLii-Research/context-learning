@@ -211,7 +211,8 @@ class NTaskModelBase(Model):
                                     context.async_wait()
                                 logs = tmp_logs  # No error, now safe to assign to logs.
                                 callbacks.on_train_batch_end(step, logs)
-                        switched = not self.update_and_switch(dynamic_switch, verbose)
+                                
+                        switched = not self.update_and_switch(epoch, dynamic_switch, verbose)
                         # If a switch occurred, we need to restore the weights
                         if switched:
                             backend.batch_set_value(zip(self.trainable_variables, weights))
@@ -257,7 +258,7 @@ class NTaskModelBase(Model):
         pass
         
         
-    def update_and_switch(self, dynamic_switch=True, verbose=0):
+    def update_and_switch(self, epoch, dynamic_switch=True, verbose=0):
         """
         Update the context layers
         
@@ -317,11 +318,11 @@ class NTaskModel(NTaskModelBase):
             self.layers[i].add_context_loss(self._calc_context_loss(i, gradients))
     
     
-    def update_and_switch(self, dynamic_switch, verbose):
+    def update_and_switch(self, epoch, dynamic_switch, verbose):
         updated = True
         for i in reversed(self.ctx_layers):
             layer = self.layers[i]
-            updated &= layer.update_and_switch(dynamic_switch=dynamic_switch, verbose=verbose)
+            updated &= layer.update_and_switch(epoch, dynamic_switch=dynamic_switch, verbose=verbose)
         return updated
     
     

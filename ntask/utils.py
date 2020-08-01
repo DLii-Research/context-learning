@@ -43,6 +43,12 @@ def set_seed(seed=0):
     tf.random.set_seed(seed)
     
     
+def trace(label, value, style='-', color=None, condition=True):
+    if not condition:
+        return None
+    return (label, value, style, color)
+    
+    
 def plot(title, labels, *frameGroups):
     fig, ax = plt.subplots()
     plotFrames(ax, title, labels, *frameGroups, xlabel="Epoch", ylabel="Value")
