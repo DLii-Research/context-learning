@@ -1,37 +1,15 @@
-from IPython.display import clear_output
-import math
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
-import random
 import tensorflow as tf
-import time
 
-
-def copy_metric(metric):
-    """Copy a new metric instance from an existing instance"""
-    return tf.keras.metrics.deserialize(tf.keras.metrics.serialize(metric))
-
-
-# Display a progress bar. (clears all output)
-# @param {Integer} progress
-# @param {String}  title
-def display_progress(progress, title = None):
-    WIDTH = 20
-    progress = max(0, min(1.0, progress))
-    blocks = math.floor(20 * progress)
-    clear_output(wait = True)
-    if title:
-        print(title)
-    print(f"Progress: [{'#'*blocks}{'-'*(WIDTH - blocks)}] {progress*100:.2f}%")
-
+import matplotlib
+import random
 
 def hrr(length, normalized=True):
     """Create a new HRR vector using Tensorflow tensors"""
     length = int(length)      
     shp = int((length-1)/2)
     if normalized:    
-        x = tf.random.uniform( shape = (shp,), minval = -math.pi, maxval = math.pi, dtype = tf.dtypes.float32, seed = 100, name = None )
+        x = tf.random.uniform( shape = (shp,), minval = -np.pi, maxval = np.pi, dtype = tf.dtypes.float32, seed = 100, name = None )
         x = tf.cast(x, tf.complex64)
         if length % 2:
             x = tf.math.real( tf.signal.ifft( tf.concat([tf.ones(1, dtype="complex64"), tf.exp(1j*x), tf.exp(-1j*x[::-1])], axis=0)))
@@ -57,8 +35,14 @@ def circ_conv(x, y):
 
 def logmod(x):
     return np.sign(x)*np.log(abs(x) + 1)
-
-
+    
+    
+def set_seed(seed=0):
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+    
+    
 def plot(title, labels, *frameGroups):
     fig, ax = plt.subplots()
     plotFrames(ax, title, labels, *frameGroups, xlabel="Epoch", ylabel="Value")

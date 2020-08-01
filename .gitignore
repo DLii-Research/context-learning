@@ -1,4 +1,8 @@
 .vscode/
+logs/
+
+# I keep old stuff for reference... Don't track it
+*_old/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
