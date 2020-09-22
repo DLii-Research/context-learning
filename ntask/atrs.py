@@ -81,7 +81,7 @@ class AtrModel:
                 self.hot_context = best_fit
                 
                 # Before the ATR value is updated...
-#                 self.on_before_update(context_loss)
+                self.on_before_update(context_loss)
                 
                 # Update the ATR value for the new context
                 self.update_atr_value(self.context_losses[self.hot_context], switched=True)
@@ -90,7 +90,7 @@ class AtrModel:
             self.context_layer.next_context()
                 
     
-    def update_and_switch(self, epoch, context_loss, dynamic_switch, verbose):
+    def update_and_switch(self, epoch, context_loss, dynamic_switch, no_retry, verbose):
         """
         Update the ATR.
         
@@ -108,18 +108,24 @@ class AtrModel:
             # Switch contexts and return the result
             self.switch_contexts(context_loss, verbose)
             
+            if (verbose & Verbosity.Contexts) and no_retry:
+                tf.print(f"\n[{self.context_layer.name}] Switched context to {self.hot_context}")
+            
             # Switched, so nothing was updated
             return False
         
         # Before the ATR value is updated...
-        self.on_before_update(context_loss)
+        # This is a sort of hack to skip updating delta
+        # traces after a best-fit was found.
+        if epoch != self.epoch_switched:
+            self.on_before_update(context_loss)
             
         self.update_atr_value(context_loss, switched=False)
             
         # Reset the switch count if we previously switched
         if self._num_seq_switches != 0:
             self._num_seq_switches.assign(0)
-            if verbose & Verbosity.Contexts:
+            if (verbose & Verbosity.Contexts) and not no_retry:
                 tf.print(f"\n[{self.context_layer.name}] Switched context to {self.hot_context}")
             
         # Updated successfully
@@ -132,6 +138,9 @@ class AtrModel:
             self.values_initialized.scatter_nd_update([[self.hot_context]], [True])
 
     # Event Handlers ------------------------------------------------------------------------------
+    
+    def on_begin_train(self):
+        self.epoch_switched.assign(-1)
     
     def on_before_switch(self, epoch, context_loss):
         if epoch != self.epoch_switched:
@@ -182,11 +191,11 @@ class AtrModel:
         Return a dictionary of traces to plot
         """
         return {
-            "ATR Traces": [
+            (None, None, "Context Loss"): [
                 trace(f"Context {i}", v) for i, v in enumerate(self.values.value())
                       if self.values_initialized[i] is not None
             ],
-            "Delta Trace": [
+            (None, "Epoch", "Context Delta"): [
                 trace("Switch Threshold", self.switch_threshold.value(), '--', 'grey'), # Dark grey is lighter than grey...
                 trace("Add Threshold", self.add_threshold.value(), '-.', 'grey', condition=self.max_num_contexts>0),
                 trace("Context Delta", self.delta_switched.value(), '-', condition=self.epoch_switched==epoch),

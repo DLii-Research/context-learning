@@ -1,11 +1,11 @@
 from collections import defaultdict
 from tensorflow.keras.callbacks import BaseLogger
 import tensorflow as tf
+import matplotlib
 import matplotlib.pyplot as plt
 import os
 
 from .models import NTaskModel
-
 
 class AtrLoggerTensorBoard(tf.keras.callbacks.BaseLogger):
     """
@@ -39,16 +39,25 @@ class AtrLogger(tf.keras.callbacks.BaseLogger):
     Log ATR models via matplotlib
     """
     
-    def __init__(self, *args, **kwargs):
+    def __init__(self, track_epochs_internally=False, *args, **kwargs):
         super(AtrLogger, self).__init__(*args, **kwargs)
         self.plots = None # layer_name -> { plot_name -> { trace_name -> { data } } }
         self.model = None
+        self.epoch = 0 if track_epochs_internally else None
         
-    def plot(self, vertical=True, figsize=(30, 6)):
+    def plot(self, vertical=True, figsize=(30, 9), title=None, savefile=None):
+        if savefile and savefile.endswith(".pgf"):
+            matplotlib.use("pgf")
+            matplotlib.rcParams.update({
+                "pgf.texsystem": "pdflatex",
+                "font.family": "serif",
+                "text.usetex": True,
+                "pgf.rcfonts": False
+            })
         for layer, plots in self.plots.items():
             dim = (len(plots), 1) if vertical else (1, len(plots))
-            fig, axs = plt.subplots(*dim, figsize=figsize, sharey=False)
-            for i, (plot_name, traces) in enumerate(plots.items()):
+            fig, axs = plt.subplots(*dim, figsize=figsize, sharey=False, sharex=True)
+            for i, ((plot_name, xlabel, ylabel), traces) in enumerate(plots.items()):
                 for label, trace in traces.items():
                     axs[i].plot(
                         trace["x"], trace["y"],
@@ -56,11 +65,14 @@ class AtrLogger(tf.keras.callbacks.BaseLogger):
                         color=trace["color"],
                         linestyle=trace["style"])
                 axs[i].set_title(plot_name)
-                axs[i].set_xlabel("Epoch")
-                axs[i].set_ylabel("Value")
+                axs[i].set_xlabel(xlabel)
+                axs[i].set_ylabel(ylabel)
                 axs[i].grid(True)
                 axs[i].legend()
-            fig.suptitle(layer.name)
+            fig.suptitle(title)
+        plt.tight_layout()
+        if savefile:
+            plt.savefig(savefile)
     
     def set_model(self, model):
         if not isinstance(model, NTaskModel):
@@ -79,6 +91,8 @@ class AtrLogger(tf.keras.callbacks.BaseLogger):
         super(AtrLogger, self).set_model(model)
         
     def on_epoch_end(self, epoch, logs=None):
+        if self.epoch is not None:
+            self.epoch += 1
         for layer, plots in self.plots.items():
             for plot_name, traces in layer.atr_model.epoch_traces(epoch).items():
                 for trace_data in traces:
@@ -88,5 +102,5 @@ class AtrLogger(tf.keras.callbacks.BaseLogger):
                         if len(trace["x"]) == 0:
                             trace["style"] = style
                             trace["color"] = color
-                        trace["x"].append(epoch)
+                        trace["x"].append(self.epoch or epoch)
                         trace["y"].append(value)

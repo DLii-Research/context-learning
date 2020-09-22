@@ -23,12 +23,16 @@ class Context(Layer):
         # Store the input shape since weights can be rebuilt later
         self._input_shape = int(input_shape[-1])
         
-        # Build the ATR model
-        self._atr_model.set_context_layer(self)
-        self._atr_model.build(self.num_contexts)
-        
         # The number of contexts to create in the kernel
-        num_kernel_contexts = max(self.num_contexts, self.atr_model.max_num_contexts)
+        num_kernel_contexts = self.num_contexts
+        
+        # Build the ATR model
+        if self._atr_model is not None:
+            self._atr_model.set_context_layer(self)
+            self._atr_model.build(self.num_contexts)
+        
+            # If we are using dynamically-added contexts, we need to account for that
+            num_kernel_contexts = max(self.num_contexts, self.atr_model.max_num_contexts)
         
         # Create the HRR initializer. This will create the list of HRR vectors
         initializer = lambda shape, dtype=None: hrrs(self._input_shape, n=num_kernel_contexts)
@@ -55,7 +59,7 @@ class Context(Layer):
         return circ_conv(inputs, context_hrr)
     
     
-    def update_and_switch(self, epoch, dynamic_switch, verbose):
+    def update_and_switch(self, epoch, dynamic_switch, no_retry, verbose):
         """
         Update ATR values and switch contexts if necessary.
         Returns True if no context switch occurs; False otherwise
@@ -65,7 +69,7 @@ class Context(Layer):
             return True
         
         # Update the ATR madel
-        result = self._atr_model.update_and_switch(epoch, self.context_loss, dynamic_switch, verbose)
+        result = self._atr_model.update_and_switch(epoch, self.context_loss, dynamic_switch, no_retry, verbose)
         
         # Clear the context loss when we're done
         self.clear_context_loss()

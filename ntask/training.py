@@ -10,6 +10,8 @@ def train(model,
           initial_task_shuffle=False,
           explicit_contexts=None,
           assert_contexts=False,
+          y_test_list=None,
+          eval_after_cycle=False,
           **kwargs):
     """
     Train an NTask model on a dataset containing samples from multiple contexts.
@@ -52,9 +54,14 @@ def train(model,
     # Track the layer contexts for each task for later evaluation
     context_map = [None]*len(indices)
     
+    # Keep track of the model's history
+    history_list = []
+    eval_list = []
+    
     for cycle in range(cycles):
         for i, task in enumerate(indices):
             y_train = y_train_list[task]
+            y_test = y_test_list[task] if y_test_list is not None else None
             
             # Calculate the initial epoch to start training on
             initial_epoch = cycle*len(y_train_list)*epochs + i*epochs
@@ -64,15 +71,22 @@ def train(model,
             if explicit_contexts[task] is not None:
                 model.set_contexts(explicit_contexts[task])
                 
-            model.fit(x_train, y_train, epochs=end_epoch, initial_epoch=initial_epoch, dynamic_switch=(explicit_contexts[task] is None), **kwargs)
+            history = model.fit(x_train, y_train, epochs=end_epoch, initial_epoch=initial_epoch, dynamic_switch=(explicit_contexts[task] is None), validation_data=y_test, **kwargs)
             
             # Update the task map
             context_map[task] = model.get_contexts()
+            
+            # Track the model history
+            history_list.append(history)
+                
+        if eval_after_cycle:
+            y_test = y_test_list if y_test_list is not None else y_train_list
+            eval_list.append(evaluate(model, x_train, y_test, task_map, context_map, display_predictions=False, verbose=0))
                 
         if task_shuffle:
             np.random.shuffle(indices)
             
-    return task_map, context_map
+    return history_list, eval_list, task_map, context_map
 
 
 def evaluate(model,
