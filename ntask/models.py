@@ -85,21 +85,7 @@ class NTaskModelBase(Model):
     Tensorflow Keras' model class. These mechanisms can be implemented by
     inheriting from this class.
     """
-    
-    def __init__(self, *args, **kwargs):
-        super(NTaskModelBase, self).__init__(*args, **kwargs)
-        self.accumulate_gradients = False
-        self.accumulated_gradients = None
         
-        
-    def compile(self, *args, accumulate_gradients=False, **kwargs):
-        super(NTaskModelBase, self).compile(*args, **kwargs)
-        
-        # TODO
-        if accumulate_gradients:
-            self.accumulate_gradients = True
-        
-    
     def train_step(self, data):
         data = data_adapter.expand_1d(data)
         x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
@@ -125,9 +111,10 @@ class NTaskModelBase(Model):
             batch_size=None,
             epochs=1,
             verbose=1,
-            dynamic_switch=True,
+            auto_switch=True,
+            retry_fit=True,
+            absorb=True,
             train_after_switch=True,
-            find_best_fit=True,
             callbacks=None,
             validation_split=0.,
             validation_data=None,
@@ -142,6 +129,16 @@ class NTaskModelBase(Model):
             max_queue_size=10,
             workers=1,
             use_multiprocessing=False):
+        
+        """
+        Custom fit function for the context model
+        
+        auto_switch:        Enable/disable autonomous context switching
+        train_after_switch: 
+        retry_fit:          Locate the next fitting context by re-performing fit.
+        absorb:             Reset the switch sequence counter upon successful training.
+                            This is mainly used to maintain switch sequencing for temporally-extended tasks
+        """
 
         training._keras_api_gauge.get_cell('fit').set(True)
         # Legacy graph support is contained in `training_v1.Model`.
@@ -197,12 +194,15 @@ class NTaskModelBase(Model):
                 self.reset_metrics()
                 callbacks.on_epoch_begin(epoch)
                 dataset = tf.data.Dataset.zip(next(window_iterator))
-                switched = True
-                switched_during_epoch = False
+                switched_during_epoch = False # Indicate if the model has attempted at least one switch during this epoch
+                switched = True               # Indicate if the model switched on the most recent fit iteration
                 weights = backend.batch_get_value(self.trainable_variables)
-                while switched and (not switched_during_epoch or find_best_fit):
+                # Perform a 'fit call'. Assuming retry_fit, this call is re-attempted after each switch until a context fits
+                while switched and (retry_fit or not switched_during_epoch):
                     self.initialize_epoch(epoch)
                     iterator = iter(dataset)
+                    
+                    # Perform a fit call
                     with data_handler.catch_stop_iteration():
                         for step in data_handler.steps():
                             with traceme.TraceMe( 'TraceContext', graph_type='train', epoch_num=epoch, step_num=step, batch_size=batch_size):
@@ -215,8 +215,8 @@ class NTaskModelBase(Model):
                                     context.async_wait()
                                 logs = tmp_logs  # No error, now safe to assign to logs.
                                 callbacks.on_train_batch_end(step, logs)
-                                
-                        switched = not self.update_and_switch(epoch, dynamic_switch, not train_after_switch, verbose)
+                        
+                        switched = not self.update_and_switch(epoch, auto_switch, absorb, retry_fit, verbose)
                         switched_during_epoch |= switched
                         
                         # If a switch occurred, we need to restore the weights
@@ -225,9 +225,6 @@ class NTaskModelBase(Model):
                             self.reset_metrics()
                     
                 epoch_logs = copy.copy(logs)
-                
-                if self.accumulate_gradients:
-                    self.optimizer.apply_gradients(zip(self.accumulated_gradients, self.trainable_variables))
 
                 # Run validation.
                 if validation_data and self._should_eval(epoch, validation_freq):
@@ -345,12 +342,12 @@ class NTaskModelBase(Model):
         pass
         
         
-    def update_and_switch(self, epoch, dynamic_switch=True, verbose=0):
+    def update_and_switch(self, epoch, auto_switch=True, absorb=True, retry_fit=True, verbose=0):
         """
         Update the context layers
         
         Args:
-            dynamic_switch [bool]: Enable/disable dynamic switching mechanisms
+            auto_switch [bool]: Enable/disable autonomous context switching mechanisms
         Return:
             [bool]: Indicate if no switches occurred
         """
@@ -390,10 +387,10 @@ class NTaskModel(NTaskModelBase):
             delta_at_next_layer = gradients[index]
         else:
             index = self.ctx_gradient_map[ctx_layer_idx]
-            signs = tf.sign(tf.reduce_sum(gradients[index], axis=0))
-            delta_at_next_layer = tf.reduce_mean(tf.multiply(gradients[index], gradients[index]), axis=0)
+#             signs = tf.sign(tf.reduce_sum(gradients[index], axis=0))
+#             delta_at_next_layer = tf.reduce_sum(tf.multiply(gradients[index], gradients[index]), axis=0)
 #             delta_at_next_layer = tf.multiply(signs, tf.reduce_mean(tf.abs(gradients[index]), axis=0))
-#             delta_at_next_layer = tf.reduce_sum(gradients[index], axis=0)
+            delta_at_next_layer = tf.reduce_mean(gradients[index], axis=0)
         transpose_of_weights_at_next_layer = tf.transpose(self.layers[ctx_layer_idx + 1].weights[0])
         context_delta = tf.tensordot(delta_at_next_layer, transpose_of_weights_at_next_layer, 1)
         return context_delta
@@ -406,9 +403,9 @@ class NTaskModel(NTaskModelBase):
     
     
     def initialize_epoch(self, epoch):
-        # Clear context loss (probably going to use a new mechanism here)
-#         for i in self.ctx_layers:
-#             self.layers[i].clear_context_loss()
+        # Clear context loss
+        for i in self.ctx_layers:
+            self.layers[i].clear_context_loss()
         pass
             
     
@@ -417,11 +414,11 @@ class NTaskModel(NTaskModelBase):
             self.layers[i].add_context_loss(self._calc_context_loss(i, gradients))
     
     
-    def update_and_switch(self, epoch, dynamic_switch, no_retry, verbose):
+    def update_and_switch(self, epoch, auto_switch, absorb, retry_fit, verbose):
         updated = True
         for i in reversed(self.ctx_layers):
             layer = self.layers[i]
-            updated &= layer.update_and_switch(epoch, dynamic_switch=dynamic_switch, no_retry=no_retry, verbose=verbose)
+            updated &= layer.update_and_switch(epoch, auto_switch=auto_switch, absorb=absorb, retry_fit=retry_fit, verbose=verbose)
         return updated
     
     
@@ -432,3 +429,23 @@ class NTaskModel(NTaskModelBase):
     def set_contexts(self, contexts):
         for i, layer in enumerate(self.ctx_layers):
             self.layers[layer].hot_context = contexts[i]
+            
+    # Utility Methods -----------------------------------------------------------------------------
+            
+    def backup(self):
+        """
+        A utility function for temporarily backing up a model.
+        This function is intended for debugging and hyperparameter tuning purposes.
+        """
+        self._backup = tf.python.keras.backend.batch_get_value(self.trainable_weights)
+        for layer in self.ctx_layers:
+            self.layers[layer].backup()
+        
+        
+    def restore(self):
+        """
+        Restore the temporary backup
+        """
+        tf.python.keras.backend.batch_set_value(zip(self.trainable_weights, self._backup))
+        for layer in self.ctx_layers:
+            self.layers[layer].restore()

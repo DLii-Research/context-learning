@@ -59,7 +59,7 @@ class Context(Layer):
         return circ_conv(inputs, context_hrr)
     
     
-    def update_and_switch(self, epoch, dynamic_switch, no_retry, verbose):
+    def update_and_switch(self, epoch, auto_switch, absorb, retry_fit, verbose):
         """
         Update ATR values and switch contexts if necessary.
         Returns True if no context switch occurs; False otherwise
@@ -69,10 +69,7 @@ class Context(Layer):
             return True
         
         # Update the ATR madel
-        result = self._atr_model.update_and_switch(epoch, self.context_loss, dynamic_switch, no_retry, verbose)
-        
-        # Clear the context loss when we're done
-        self.clear_context_loss()
+        result = self._atr_model.update_and_switch(epoch, self.context_loss, auto_switch, absorb, retry_fit, verbose)
         
         # Did the ATR model update or switch?
         return result
@@ -112,6 +109,23 @@ class Context(Layer):
         """Switch to the next sequential context"""
         self.hot_context = (self.hot_context + 1) % self.num_contexts
         
+    # Utility Methods -----------------------------------------------------------------------------
+
+    def backup(self):
+        """
+        Create a temporary backup of this layer
+        """
+        self._backup = self.hot_context
+        self.atr_model.backup()
+        
+    def restore(self):
+        """
+        Restore a temporary backup of this layer
+        """
+        self.hot_context = self._backup
+        self.atr_model.restore()
+
+    # Properties ----------------------------------------------------------------------------------
     
     @property
     def atr_model(self):
