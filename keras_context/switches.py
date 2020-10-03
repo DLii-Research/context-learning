@@ -4,7 +4,7 @@ import numpy as np
 from .flags import Verbosity
 from .utils import trace
 
-class AtrModel:
+class SwitchModel:
     
     def __init__(self, switch_threshold, add_threshold=0.0, max_contexts=0, switch_delay=0):
         """
@@ -34,18 +34,19 @@ class AtrModel:
         self._exceeded_context_limit = tf.Variable(False, name="Context_Limit_Exceeded", trainable=False, dtype=tf.bool)
         
         # Track the context-loss delta for the active context
-        self.delta = tf.Variable(0.0, name="ATR_Delta", trainable=False, dtype=tf.float32)
+        self.delta = tf.Variable(0.0, name="Loss_Delta", trainable=False, dtype=tf.float32)
         
         # Store the delta that triggered the initial context switch
-        self.delta_switched = tf.Variable(0.0, name="ATR_Delta_Switched", trainable=False, dtype=tf.float32)
+        self.delta_switched = tf.Variable(0.0, name="Loss_Delta_Switched", trainable=False, dtype=tf.float32)
         
         # To be built...
-        self.values = None
-        self.values_initialized = None
+        self.losses = None
+        self.losses_initialized = None
         
         
     def set_context_layer(self, context_layer):
         self._context_layer = context_layer
+    
     
     def build(self, num_contexts):
         # Determine the number of contexts to create.
@@ -53,11 +54,11 @@ class AtrModel:
         # to create the list at its max size initially.
         num_contexts = tf.math.maximum(num_contexts, self._max_contexts)
         
-        # Create the list of ATR values to track
-        self.values = tf.Variable(np.zeros(num_contexts), name="ATR_Values", trainable=False, dtype=tf.float32)
+        # Create the list of context-loss values to track
+        self.losses = tf.Variable(np.zeros(num_contexts), name="Loss_Values", trainable=False, dtype=tf.float32)
         
-        # A second list is created to determine uninitialized ATR values
-        self.values_initialized = tf.Variable(np.zeros(num_contexts), name="ATR_Values_Initialized", trainable=False, dtype=tf.bool)
+        # A second list is created to determine uninitialized context-loss values
+        self.losses_initialized = tf.Variable(np.zeros(num_contexts), name="Loss_Values_Initialized", trainable=False, dtype=tf.bool)
         
     
     def add_context(self):
@@ -70,6 +71,7 @@ class AtrModel:
             self.delayed_epochs.assign(self._switch_delay)
             if verbose & Verbosity.Contexts:
                 tf.print(f"\n[{self.context_layer.name}] Uninitialized context: Context switching disabled for {self._switch_delay} absorbing epochs")
+        
         
     def switch_contexts(self, context_loss, verbose):
         
@@ -96,23 +98,23 @@ class AtrModel:
                 # Switch to the best-fitting context
                 self.hot_context = best_fit
                 
-                # Before the ATR value is updated...
+                # Before the context-loss value is updated...
                 self.on_before_update(context_loss)
                 
-                # Update the ATR value for the new context
-                self.update_atr_value(self.context_losses[self.hot_context], switched=True)
+                # Update the context-loss value for the new context
+                self.update_context_loss(self.context_losses[self.hot_context], switched=True)
 
         else:
             self.context_layer.next_context()
-            if not self.values_initialized[self.hot_context]:
+            if not self.losses_initialized[self.hot_context]:
                 self.reset_switch_delay(verbose)
                 
     
     def update_and_switch(self, epoch, context_loss, auto_switch, absorb, retry_fit, verbose):
         """
-        Update the ATR.
+        Update the context loss or switch contexts if necessary.
         
-        Returns True if no switch occurred and the ATR values were updated; otherwise False
+        Returns True if no switch occurred and the context-loss values were updated; otherwise False
         """
         if auto_switch and self.delayed_epochs <= 0 and self.should_switch(epoch, context_loss):
             
@@ -132,14 +134,14 @@ class AtrModel:
             # Switched, so nothing was updated
             return False
         
-        # Before the ATR value is updated...
+        # Before the context-loss value is updated...
         # This is a sort of hack to skip updating delta
         # traces after a best-fit was found.
         if epoch != self.epoch_switched:
             self.on_before_update(context_loss)
         
-        # Update the ATR value
-        self.update_atr_value(context_loss, switched=False)
+        # Update the context-loss value
+        self.update_context_loss(context_loss, switched=False)
             
         if absorb:
             # Decrement the delayed epochs counter on absorbing states
@@ -156,10 +158,10 @@ class AtrModel:
         return True
     
     
-    def set_atr_value(self, context_loss):
-        self.values.scatter_nd_update([[self.hot_context]], [context_loss])
-        if not self.values_initialized[self.hot_context]:
-            self.values_initialized.scatter_nd_update([[self.hot_context]], [True])
+    def set_context_loss(self, context_loss):
+        self.losses.scatter_nd_update([[self.hot_context]], [context_loss])
+        if not self.losses_initialized[self.hot_context]:
+            self.losses_initialized.scatter_nd_update([[self.hot_context]], [True])
             
 
     # Event Handlers ------------------------------------------------------------------------------
@@ -169,13 +171,13 @@ class AtrModel:
     
     def on_before_switch(self, epoch, context_loss):
         if epoch != self.epoch_switched:
-            delta = self.values[self.hot_context] - context_loss
+            delta = self.losses[self.hot_context] - context_loss
             self.delta_switched.assign(delta)
             self.delta.assign(delta)
             
     def on_before_update(self, context_loss):
-        if self.values_initialized[self.hot_context]:
-            delta = self.values[self.hot_context] - context_loss
+        if self.losses_initialized[self.hot_context]:
+            delta = self.losses[self.hot_context] - context_loss
             self.delta.assign(delta)
             
     # Overridable ---------------------------------------------------------------------------------
@@ -186,22 +188,21 @@ class AtrModel:
         # This is how responsible the context layer was for the loss
         return tf.keras.losses.mean_squared_error(np.zeros(len(context_delta)), context_delta)
     
-    def update_atr_value(self, context_loss, switched):
-        """Update the ATR value"""
-        # Update the ATR value
-        self.set_atr_value(context_loss)
+    def update_context_loss(self, context_loss, switched):
+        """Update the context loss"""
+        self.set_context_loss(context_loss)
         return True
     
     def find_best_fit_context(self):
         """Locate the context index with the best fit"""
-        return tf.argmax(tf.subtract(self.values, self.context_losses)[:self.num_contexts])
+        return tf.argmax(tf.subtract(self.losses, self.context_losses)[:self.num_contexts])
     
     def should_switch(self, epoch, context_loss):
-        # If the ATR value has not been initialized yet, we don't need to switch
-        if not self.values_initialized[self.hot_context]:
+        # If the context-loss value has not been initialized yet, we don't need to switch
+        if not self.losses_initialized[self.hot_context]:
             return False
         # If the context loss exceeds the threshold
-        delta = self.values[self.hot_context] - context_loss
+        delta = self.losses[self.hot_context] - context_loss
         return delta < self.switch_threshold
     
     def should_add_context(self, context_loss, best_fit_context_idx):
@@ -209,7 +210,7 @@ class AtrModel:
         Determine if a new context should be added
         Note: This is only checked after a switch has been determined
         """
-        delta = self.values[self.hot_context] - self.context_losses[best_fit_context_idx]
+        delta = self.losses[self.hot_context] - self.context_losses[best_fit_context_idx]
         return delta < self.add_threshold
     
     def epoch_traces(self, epoch):
@@ -218,8 +219,8 @@ class AtrModel:
         """
         return {
             (None, None, "Context Loss"): [
-                trace(f"Context {i}", v) for i, v in enumerate(self.values.value())
-                      if self.values_initialized[i] is not None
+                trace(f"Context {i}", v) for i, v in enumerate(self.losses.value())
+                      if self.losses_initialized[i] is not None
             ],
             (None, "Epoch", "Context Delta"): [
                 trace("Switch Threshold", self.switch_threshold, '--', 'grey'), # Dark grey is lighter than grey...
@@ -242,8 +243,8 @@ class AtrModel:
             "epoch_switched": self.epoch_switched.value(),
             "delta": self.delta.value(),
             "delta_switched": self.delta_switched.value(),
-            "values": self.values.value(),
-            "values_initialized": self.values_initialized.value()
+            "losses": self.losses.value(),
+            "losses_initialized": self.losses_initialized.value()
         }
         
     def restore(self):
@@ -256,8 +257,8 @@ class AtrModel:
         self.epoch_switched.assign(self._backup["epoch_switched"])
         self.delta.assign(self._backup["delta"])
         self.delta_switched.assign(self._backup["delta_switched"])
-        self.values.assign(self._backup["values"])
-        self.values_initialized.assign(self._backup["values_initialized"])
+        self.losses.assign(self._backup["losses"])
+        self.losses_initialized.assign(self._backup["losses_initialized"])
         
     # Properties ----------------------------------------------------------------------------------
         
@@ -304,25 +305,25 @@ class AtrModel:
         return self._add_threshold.assign(threshold)
 
     
-# Atr Implementations -----------------------------------------------------------------------------
+# Switch Implementations -----------------------------------------------------------------------------
 
-class AtrMovingAverage(AtrModel):
-    def update_atr_value(self, context_loss, switched):
-        if switched or not self.values_initialized[self.hot_context]:
-            self.set_atr_value(context_loss)
-        else:
-            self.set_atr_value((self.values[self.hot_context] + context_loss) / 2.0)
-        return True
+# class AtrMovingAverage(AtrModel):
+#     def update_context_loss(self, context_loss, switched):
+#         if switched or not self.losses_initialized[self.hot_context]:
+#             self.set_atr_value(context_loss)
+#         else:
+#             self.set_atr_value((self.losses[self.hot_context] + context_loss) / 2.0)
+#         return True
             
-class TdErrorSwitch(AtrModel):
+class TdErrorSwitch(SwitchModel):
     def __init__(self, learn_rate, switch_threshold, add_threshold=0.0, max_contexts=0, switch_delay=0):
         super(TdErrorSwitch, self).__init__(switch_threshold, add_threshold, max_contexts, switch_delay)
         self.learn_rate = learn_rate
     
-    def update_atr_value(self, context_loss, switched):
-        if switched or not self.values_initialized[self.hot_context]:
-            self.set_atr_value(context_loss)
+    def update_context_loss(self, context_loss, switched):
+        if switched or not self.losses_initialized[self.hot_context]:
+            self.set_context_loss(context_loss)
         else:
-            delta = context_loss - self.values[self.hot_context]
-            self.set_atr_value(self.values[self.hot_context] + self.learn_rate*delta)
+            delta = context_loss - self.losses[self.hot_context]
+            self.set_context_loss(self.losses[self.hot_context] + self.learn_rate*delta)
         return True

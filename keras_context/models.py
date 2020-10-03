@@ -79,7 +79,7 @@ def _minimize(strategy, tape, optimizer, loss, trainable_variables):
     return gradients
     
 # Extended from https://github.com/tensorflow/tensorflow/blob/v2.2.0/tensorflow/python/keras/engine/training.py
-class NTaskModelBase(Model):
+class ContextModelBase(Model):
     """
     This abstract model integrates the raw mechanisms and handlers into
     Tensorflow Keras' model class. These mechanisms can be implemented by
@@ -354,9 +354,9 @@ class NTaskModelBase(Model):
         pass
     
 
-class NTaskModel(NTaskModelBase):
+class ContextModel(ContextModelBase):
     def __init__(self, *args, **kwargs):
-        super(NTaskModel, self).__init__(*args, **kwargs)
+        super(ContextModel, self).__init__(*args, **kwargs)
         self.ctx_layers = [i for i, layer in enumerate(self.layers) if isinstance(layer, Context)]
         
         # We need to map the context layers to their gradient indices
@@ -381,7 +381,6 @@ class NTaskModel(NTaskModelBase):
         4) If the above points aren't met, things will break and it may be hard to locate the bugs
         """
         # From the delta rule in neural network math
-                # From the delta rule in neural network math
         if self.layers[ctx_layer_idx + 1].use_bias:
             index = self.ctx_gradient_map[ctx_layer_idx] + 1 # Simplify the calculation of the deltas
             delta_at_next_layer = gradients[index]
@@ -398,8 +397,8 @@ class NTaskModel(NTaskModelBase):
     
     def initialize_fit(self):
         for i in self.ctx_layers:
-            if self.layers[i].atr_model:
-                self.layers[i].atr_model.on_begin_train()
+            if self.layers[i].switch_model:
+                self.layers[i].switch_model.on_begin_train()
     
     
     def initialize_epoch(self, epoch):

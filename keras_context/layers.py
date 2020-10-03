@@ -7,11 +7,11 @@ from .utils import hrrs, circ_conv
 
 class Context(Layer):
     
-    def __init__(self, contexts=1, atr_model=None, **kwargs):
+    def __init__(self, contexts=1, switch_model=None, **kwargs):
         super(Context, self).__init__(**kwargs)
         
-        # The ATR model handles the switching mechanisms
-        self._atr_model = atr_model
+        # The switch model handles the switching mechanisms
+        self._switch_model = switch_model
         
         # Information Tracking
 #         self._context_loss = tf.Variable([0.0, 0.0], name="Context_Losses", trainable=False, dtype=float) # Created in build step
@@ -26,13 +26,13 @@ class Context(Layer):
         # The number of contexts to create in the kernel
         num_kernel_contexts = self.num_contexts
         
-        # Build the ATR model
-        if self._atr_model is not None:
-            self._atr_model.set_context_layer(self)
-            self._atr_model.build(self.num_contexts)
+        # Build the switch model
+        if self._switch_model is not None:
+            self._switch_model.set_context_layer(self)
+            self._switch_model.build(self.num_contexts)
         
             # If we are using dynamically-added contexts, we need to account for that
-            num_kernel_contexts = max(self.num_contexts, self.atr_model.max_num_contexts)
+            num_kernel_contexts = max(self.num_contexts, self.switch_model.max_num_contexts)
         
         # Create the HRR initializer. This will create the list of HRR vectors
         initializer = lambda shape, dtype=None: hrrs(self._input_shape, n=num_kernel_contexts)
@@ -61,21 +61,20 @@ class Context(Layer):
     
     def update_and_switch(self, epoch, auto_switch, absorb, retry_fit, verbose):
         """
-        Update ATR values and switch contexts if necessary.
+        Update context-loss values and switch contexts if necessary.
         Returns True if no context switch occurs; False otherwise
         """
-        # If there is no ATR model, there's nothing to update
-        if self._atr_model is None:
+        # If there is no switch model, there's nothing to update
+        if self._switch_model is None:
             return True
         
-        # Update the ATR madel
-        result = self._atr_model.update_and_switch(epoch, self.context_loss, auto_switch, absorb, retry_fit, verbose)
+        # Update the switch madel
+        result = self._switch_model.update_and_switch(epoch, self.context_loss, auto_switch, absorb, retry_fit, verbose)
         
-        # Did the ATR model update or switch?
+        # Did the switch model update or switch?
         return result
         
     
-    #TODO Context adding
     def add_context(self):
         # kernel_arr = self.kernel.value()
         # num_hrrs = max(0, self._num_contexts - len(kernel_arr))
@@ -84,7 +83,6 @@ class Context(Layer):
         # Create the weights for the layer.
         # The weights in this layer are generated HRR vectors, and are never updated.
         # self.kernel = new_weights
-        
         if self._num_contexts < self._max_contexts:
             self._num_contexts.assign_add(1)
             return True
@@ -98,8 +96,8 @@ class Context(Layer):
     
     def add_context_loss(self, context_loss):
         """Accumulate context loss"""
-        if self._atr_model is not None:
-            context_loss = self._atr_model.context_loss_fn(context_loss)
+        if self._switch_model is not None:
+            context_loss = self._switch_model.context_loss_fn(context_loss)
         else:
             context_loss = tf.keras.losses.mean_squared_error(np.zeros(len(context_loss)), context_loss)
         self._context_loss.scatter_nd_add([[self.hot_context]], [context_loss])
@@ -116,20 +114,20 @@ class Context(Layer):
         Create a temporary backup of this layer
         """
         self._backup = self.hot_context
-        self.atr_model.backup()
+        self.switch_model.backup()
         
     def restore(self):
         """
         Restore a temporary backup of this layer
         """
         self.hot_context = self._backup
-        self.atr_model.restore()
+        self.switch_model.restore()
 
     # Properties ----------------------------------------------------------------------------------
     
     @property
-    def atr_model(self):
-        return self._atr_model
+    def switch_model(self):
+        return self._switch_model
     
     @property
     def context_loss(self):
