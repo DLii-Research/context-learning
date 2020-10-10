@@ -1,5 +1,6 @@
 .vscode/
 logs/
+data/
 
 # I keep old stuff for reference... Don't track it
 *_old/

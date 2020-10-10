@@ -73,7 +73,7 @@ class SwitchModel:
                 tf.print(f"\n[{self.context_layer.name}] Uninitialized context: Context switching disabled for {self._switch_delay} absorbing epochs")
         
         
-    def switch_contexts(self, context_loss, verbose):
+    def switch_contexts(self, context_loss, absorb, verbose):
         
         # If we have exhausted the context list, look for the one with the best fit
         if self._num_seq_switches >= self.num_contexts:
@@ -102,7 +102,7 @@ class SwitchModel:
                 self.on_before_update(context_loss)
                 
                 # Update the context-loss value for the new context
-                self.update_context_loss(self.context_losses[self.hot_context], switched=True)
+                self.update_context_loss(self.context_losses[self.hot_context], absorb, switched=True)
 
         else:
             self.context_layer.next_context()
@@ -126,7 +126,7 @@ class SwitchModel:
             self.epoch_switched.assign(epoch)
             
             # Switch contexts and return the result
-            self.switch_contexts(context_loss, verbose)
+            self.switch_contexts(context_loss, absorb, verbose)
             
             if (verbose & Verbosity.Contexts) and not retry_fit:
                 tf.print(f"\n[{self.context_layer.name}] (no retry) Switched context to {self.hot_context}")
@@ -141,7 +141,7 @@ class SwitchModel:
             self.on_before_update(context_loss)
         
         # Update the context-loss value
-        self.update_context_loss(context_loss, switched=False)
+        self.update_context_loss(context_loss, absorb, switched=False)
             
         if absorb:
             # Decrement the delayed epochs counter on absorbing states
@@ -158,9 +158,9 @@ class SwitchModel:
         return True
     
     
-    def set_context_loss(self, context_loss):
+    def set_context_loss(self, context_loss, absorb):
         self.losses.scatter_nd_update([[self.hot_context]], [context_loss])
-        if not self.losses_initialized[self.hot_context]:
+        if not self.losses_initialized[self.hot_context] and absorb:
             self.losses_initialized.scatter_nd_update([[self.hot_context]], [True])
             
 
@@ -188,9 +188,9 @@ class SwitchModel:
         # This is how responsible the context layer was for the loss
         return tf.keras.losses.mean_squared_error(np.zeros(len(context_delta)), context_delta)
     
-    def update_context_loss(self, context_loss, switched):
+    def update_context_loss(self, context_loss, absorb, switched):
         """Update the context loss"""
-        self.set_context_loss(context_loss)
+        self.set_context_loss(context_loss, absorb)
         return True
     
     def find_best_fit_context(self):
@@ -316,14 +316,22 @@ class SwitchModel:
 #         return True
             
 class TdErrorSwitch(SwitchModel):
-    def __init__(self, learn_rate, switch_threshold, add_threshold=0.0, max_contexts=0, switch_delay=0):
+    def __init__(self, learn_rate, switch_threshold, add_threshold=0.0, max_contexts=0, switch_threshold_init=None, switch_threshold_learn_rate=0.0, switch_delay=0, init_multiplier=1.0, initial_loss=None):
         super(TdErrorSwitch, self).__init__(switch_threshold, add_threshold, max_contexts, switch_delay)
         self.learn_rate = learn_rate
+        self.switch_init = switch_threshold_init
+        self.switch_learn_rate = switch_threshold_learn_rate
+        self.init_multiplier = init_multiplier
+        self.initial_loss = initial_loss
     
-    def update_context_loss(self, context_loss, switched):
-        if switched or not self.losses_initialized[self.hot_context]:
-            self.set_context_loss(context_loss)
+    def update_context_loss(self, context_loss, absorb, switched):
+        if not self.losses_initialized[self.hot_context]:
+            init_loss = self.init_multiplier*context_loss
+            if self.initial_loss is not None:
+                init_loss = max(init_loss, self.initial_loss)
+            self.set_context_loss(init_loss, absorb)
+        elif switched:
+            self.set_context_loss(context_loss, absorb)
         else:
             delta = context_loss - self.losses[self.hot_context]
-            self.set_context_loss(self.losses[self.hot_context] + self.learn_rate*delta)
-        return True
+            self.set_context_loss(self.losses[self.hot_context] + self.learn_rate*delta, absorb)

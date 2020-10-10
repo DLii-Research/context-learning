@@ -94,7 +94,7 @@ class Context(Layer):
         self._context_loss.scatter_nd_update([[self.hot_context]], [0.0])
     
     
-    def add_context_loss(self, context_loss):
+    def add_context_loss(self, context_loss, sign):
         """Accumulate context loss"""
         if self._switch_model is not None:
             context_loss = self._switch_model.context_loss_fn(context_loss)

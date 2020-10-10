@@ -77,7 +77,7 @@ def _minimize(strategy, tape, optimizer, loss, trainable_variables):
         else:
             optimizer.apply_gradients(zip(gradients, trainable_variables))
     return gradients
-    
+
 # Extended from https://github.com/tensorflow/tensorflow/blob/v2.2.0/tensorflow/python/keras/engine/training.py
 class ContextModelBase(Model):
     """
@@ -85,7 +85,7 @@ class ContextModelBase(Model):
     Tensorflow Keras' model class. These mechanisms can be implemented by
     inheriting from this class.
     """
-        
+
     def train_step(self, data):
         data = data_adapter.expand_1d(data)
         x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
@@ -93,17 +93,17 @@ class ContextModelBase(Model):
         with backprop.GradientTape() as tape:
             y_pred = self(x, training=True)
             loss = self.compiled_loss(y, y_pred, sample_weight, regularization_losses=self.losses)
-            
+
         gradients = _minimize(self.distribute_strategy, tape, self.optimizer, loss,
               self.trainable_variables)
-        
+
         # Add context loss to layers
         self.add_context_loss(gradients)
 
         self.compiled_metrics.update_state(y, y_pred, sample_weight)
         return {m.name: m.result() for m in self.metrics}
-    
-    
+
+
     @training.enable_multi_worker
     def fit(self,
             x=None,
@@ -128,16 +128,20 @@ class ContextModelBase(Model):
             validation_freq=1,
             max_queue_size=10,
             workers=1,
-            use_multiprocessing=False):
-        
+            use_multiprocessing=False,
+            revert_after_fit=False):
+
         """
         Custom fit function for the context model
-        
+
         auto_switch:        Enable/disable autonomous context switching
-        train_after_switch: 
+        train_after_switch:
         retry_fit:          Locate the next fitting context by re-performing fit.
         absorb:             Reset the switch sequence counter upon successful training.
                             This is mainly used to maintain switch sequencing for temporally-extended tasks
+        revert_after_fit    This is a debug parameter to revert weights after performing a fit. This is used
+                            to calculate the context deltas without incorrectly learning while auto switching
+                            is disabled
         """
 
         training._keras_api_gauge.get_cell('fit').set(True)
@@ -201,7 +205,7 @@ class ContextModelBase(Model):
                 while switched and (retry_fit or not switched_during_epoch):
                     self.initialize_epoch(epoch)
                     iterator = iter(dataset)
-                    
+
                     # Perform a fit call
                     with data_handler.catch_stop_iteration():
                         for step in data_handler.steps():
@@ -215,15 +219,15 @@ class ContextModelBase(Model):
                                     context.async_wait()
                                 logs = tmp_logs  # No error, now safe to assign to logs.
                                 callbacks.on_train_batch_end(step, logs)
-                        
+
                         switched = not self.update_and_switch(epoch, auto_switch, absorb, retry_fit, verbose)
                         switched_during_epoch |= switched
-                        
+
                         # If a switch occurred, we need to restore the weights
-                        if switched or (switched_during_epoch and not train_after_switch):
+                        if switched or (switched_during_epoch and not train_after_switch) or revert_after_fit:
                             backend.batch_set_value(zip(self.trainable_variables, weights))
                             self.reset_metrics()
-                    
+
                 epoch_logs = copy.copy(logs)
 
                 # Run validation.
@@ -250,115 +254,40 @@ class ContextModelBase(Model):
 
             callbacks.on_train_end()
             return self.history
-        
-        
-#     @enable_multi_worker
-#     def evaluate(self,
-#                    x=None,
-#                    y=None,
-#                    batch_size=None,
-#                    verbose=1,
-#                    sample_weight=None,
-#                    steps=None,
-#                    callbacks=None,
-#                    max_queue_size=10,
-#                    workers=1,
-#                    use_multiprocessing=False,
-#                    return_dict=False):
-    
-#         _keras_api_gauge.get_cell('evaluate').set(True)
-#         version_utils.disallow_legacy_graph('Model', 'evaluate')
-#         self._assert_compile_was_called()
-#         self._check_call_args('evaluate')
 
-#         with self.distribute_strategy.scope():
-#             # Creates a `tf.data.Dataset` and handles batch and epoch iteration.
-#             data_handler = WindowedDataHandler(
-#                 x=x,
-#                 y=y,
-#                 sample_weight=sample_weight,
-#                 batch_size=batch_size,
-#                 steps_per_epoch=steps,
-#                 initial_epoch=0,
-#                 epochs=1,
-#                 max_queue_size=max_queue_size,
-#                 workers=workers,
-#                 use_multiprocessing=use_multiprocessing,
-#                 model=self)
 
-#             # Container that configures and calls `tf.keras.Callback`s.
-#             if not isinstance(callbacks, callbacks_module.CallbackList):
-#                 callbacks = callbacks_module.CallbackList(
-#                     callbacks,
-#                     add_history=True,
-#                     add_progbar=verbose != 0,
-#                     model=self,
-#                     verbose=verbose,
-#                     epochs=1,
-#                     steps=data_handler.inferred_steps)
-
-#             test_function = self.make_test_function()
-#             callbacks.on_test_begin()
-#             for _, iterator in data_handler.enumerate_epochs():  # Single epoch.
-#                 self.reset_metrics()
-#                 with data_handler.catch_stop_iteration():
-#                     for step in data_handler.steps():
-#                         with traceme.TraceMe(
-#                               'TraceContext',
-#                               graph_type='test',
-#                               step_num=step):
-#                             callbacks.on_test_batch_begin(step)
-#                             tmp_logs = test_function(iterator)
-#                             # Catch OutOfRangeError for Datasets of unknown size.
-#                             # This blocks until the batch has finished executing.
-#                             # TODO(b/150292341): Allow multiple async steps here.
-#                             if not data_handler.inferred_steps:
-#                                 context.async_wait()
-#                             logs = tmp_logs  # No error, now safe to assign to logs.
-#                             callbacks.on_test_batch_end(step, logs)
-#             callbacks.on_test_end()
-
-#             logs = tf_utils.to_numpy_or_python_type(logs)
-#             if return_dict:
-#                 return logs
-#             else:
-#                 results = [logs.get(name, None) for name in self.metrics_names]
-#                 if len(results) == 1:
-#                     return results[0]
-#                 return results
-        
     def add_context_loss(self, gradients):
         """Calculate and add context loss to context layers"""
         pass
-    
-    
+
+
     def initialize_fit(self):
         """Before training starts..."""
         pass
-        
-        
+
+
     def initialize_epoch(self, epoch):
         """At the beginning of an epoch..."""
         pass
-        
-        
+
+
     def update_and_switch(self, epoch, auto_switch=True, absorb=True, retry_fit=True, verbose=0):
         """
         Update the context layers
-        
+
         Args:
             auto_switch [bool]: Enable/disable autonomous context switching mechanisms
         Return:
             [bool]: Indicate if no switches occurred
         """
         pass
-    
+
 
 class ContextModel(ContextModelBase):
     def __init__(self, *args, **kwargs):
         super(ContextModel, self).__init__(*args, **kwargs)
         self.ctx_layers = [i for i, layer in enumerate(self.layers) if isinstance(layer, Context)]
-        
+
         # We need to map the context layers to their gradient indices
         self.ctx_gradient_map = {}
         index = 0
@@ -366,16 +295,16 @@ class ContextModel(ContextModelBase):
             if isinstance(layer, Context):
                 self.ctx_gradient_map[i] = index # The bias gradient
             index += len(layer.trainable_variables)
-    
-    
+
+
     def _calc_context_loss(self, ctx_layer_idx, gradients):
         """
-        IMPORTANT: 
+        IMPORTANT:
         1) Assumes no use of activation function on Ntask layer
         2) Assumes that the layer following the Ntask layer:
             a) Is a Dense layer
             b) Is using bias
-               — ex: Dense(20, ... , use_bias=True) 
+               — ex: Dense(20, ... , use_bias=True)
                — note Keras Dense layer uses bias by default if no value is given for use_bias param
         3) Assumes index of the next layer's gradient is known within the gradients list returned from gradient tape in a tape.gradient call
         4) If the above points aren't met, things will break and it may be hard to locate the bugs
@@ -387,50 +316,53 @@ class ContextModel(ContextModelBase):
         else:
             index = self.ctx_gradient_map[ctx_layer_idx]
 #             signs = tf.sign(tf.reduce_sum(gradients[index], axis=0))
-#             delta_at_next_layer = tf.reduce_sum(tf.multiply(gradients[index], gradients[index]), axis=0)
 #             delta_at_next_layer = tf.multiply(signs, tf.reduce_mean(tf.abs(gradients[index]), axis=0))
-            delta_at_next_layer = tf.reduce_mean(gradients[index], axis=0)
+            delta_at_next_layer = tf.reduce_mean(tf.multiply(gradients[index], gradients[index]), axis=0)
+#             delta_at_next_layer = tf.reduce_mean(gradients[index], axis=0)
         transpose_of_weights_at_next_layer = tf.transpose(self.layers[ctx_layer_idx + 1].weights[0])
         context_delta = tf.tensordot(delta_at_next_layer, transpose_of_weights_at_next_layer, 1)
-        return context_delta
-    
-    
+        sign = tf.sign(tf.reduce_sum(context_delta))
+
+#         tf.print(f"Sum_Deltas:", tf.reduce_sum(context_delta), "Gradient", tf.reduce_sum(delta_at_next_layer))
+        return sign, context_delta
+
+
     def initialize_fit(self):
         for i in self.ctx_layers:
             if self.layers[i].switch_model:
                 self.layers[i].switch_model.on_begin_train()
-    
-    
+
+
     def initialize_epoch(self, epoch):
         # Clear context loss
         for i in self.ctx_layers:
             self.layers[i].clear_context_loss()
-        pass
-            
-    
+
+
     def add_context_loss(self, gradients):
         for i in self.ctx_layers:
-            self.layers[i].add_context_loss(self._calc_context_loss(i, gradients))
-    
-    
+            sign, context_loss = self._calc_context_loss(i, gradients)
+            self.layers[i].add_context_loss(context_loss, sign)
+
+
     def update_and_switch(self, epoch, auto_switch, absorb, retry_fit, verbose):
         updated = True
         for i in reversed(self.ctx_layers):
             layer = self.layers[i]
             updated &= layer.update_and_switch(epoch, auto_switch=auto_switch, absorb=absorb, retry_fit=retry_fit, verbose=verbose)
         return updated
-    
-    
+
+
     def get_contexts(self):
         return [self.layers[layer].hot_context for layer in self.ctx_layers]
-    
+
 
     def set_contexts(self, contexts):
         for i, layer in enumerate(self.ctx_layers):
             self.layers[layer].hot_context = contexts[i]
-            
+
     # Utility Methods -----------------------------------------------------------------------------
-            
+
     def backup(self):
         """
         A utility function for temporarily backing up a model.
@@ -439,8 +371,8 @@ class ContextModel(ContextModelBase):
         self._backup = tf.python.keras.backend.batch_get_value(self.trainable_weights)
         for layer in self.ctx_layers:
             self.layers[layer].backup()
-        
-        
+
+
     def restore(self):
         """
         Restore the temporary backup

@@ -104,3 +104,14 @@ class ContextLogger(tf.keras.callbacks.BaseLogger):
                             trace["color"] = color
                         trace["x"].append(self.epoch or epoch)
                         trace["y"].append(value)
+       
+    
+    def to_dict(self):
+        result = {}
+        for layer, plots in self.plots.items():
+            result[layer.name] = {}
+            for key, data in plots.items():
+                result[layer.name][key] = dict(data)
+                for label in result[layer.name][key]:
+                    result[layer.name][key][label]['y'] = [float(v) for v in result[layer.name][key][label]['y']]
+        return result
