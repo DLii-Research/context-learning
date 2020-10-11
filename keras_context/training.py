@@ -10,6 +10,7 @@ def train(model,
           initial_task_shuffle=False,
           explicit_contexts=None,
           assert_contexts=False,
+          x_test=None,
           y_test_list=None,
           eval_after_cycle=False,
           **kwargs):
@@ -80,8 +81,9 @@ def train(model,
             history_list.append(history)
 
         if eval_after_cycle:
+            x_test = x_test if x_test is not None else x_train
             y_test = y_test_list if y_test_list is not None else y_train_list
-            eval_list.append(evaluate(model, x_train, y_test, task_map, context_map, display_predictions=False, verbose=0))
+            eval_list.append(evaluate(model, x_test, y_test, task_map, context_map, display_predictions=False, verbose=0))
 
         if task_shuffle:
             np.random.shuffle(indices)
