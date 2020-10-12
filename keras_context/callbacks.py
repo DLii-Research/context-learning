@@ -7,33 +7,6 @@ import os
 
 from .models import ContextModel
 
-# class AtrLoggerTensorBoard(tf.keras.callbacks.BaseLogger):
-#     """
-#     Log ATR models via TensorBoard
-#     """
-    
-#     def __init__(self, logdir, *args, **kwargs):
-#         super(AtrLoggerTensorBoard, self).__init__(*args, **kwargs)
-#         self.logdir = logdir
-#         self.writers = {}
-        
-#     def set_model(self, model):
-#         super(AtrLoggerTensorBoard, self).set_model(model)
-#         self.writers = {self.model.layers[i]: [] for i in self.model.ctx_layers}
-        
-#     def on_epoch_end(self, epoch, logs=None):
-#         """Create the correct number of writers for the task if necessary"""
-#         for layer, writers in self.writers.items():
-#             for i in range(len(writers), layer.num_contexts):
-#                 writers.append(tf.summary.create_file_writer(os.path.join(self.logdir, f"{layer.name}_Atr_{i}")))
-#             plot_tag = f"{layer.name}_Atr_Trace"
-#             for i, writer in enumerate(writers):
-#                 with writer.as_default():
-#                     value = layer.switch_model.values[i]
-#                     if value is not None:
-#                         tf.summary.scalar(plot_tag, data=value, step=epoch)
-
-                        
 class ContextLogger(tf.keras.callbacks.BaseLogger):
     """
     Log context switch models via matplotlib
