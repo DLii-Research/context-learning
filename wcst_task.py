@@ -99,12 +99,13 @@ def all_possible_inputs():
 def evaluate_model(model):
     # Get the current model state
     contexts = model.get_contexts()
-
+    num_contexts = model.layers[model.ctx_layers[0]].num_contexts.numpy()
+    
     # Generate all possible input combinations
     inputs = all_possible_inputs()
 
     accuracy_map = []
-    for context in range(3):
+    for context in range(num_contexts):
         model.set_contexts([context])
         predictions = model.predict(inputs).reshape((6, 3, 1))
         accuracy_map.append(np.bincount(
@@ -112,7 +113,7 @@ def evaluate_model(model):
 
     # Brute force best-fit because I'm too lazy :p
     best_accuracy = 0
-    for mapping in itertools.permutations(range(3)):
+    for mapping in itertools.permutations(range(num_contexts)):
         accuracy = np.mean([accuracy_map[i][j] for i, j in enumerate(mapping)])
         if accuracy > best_accuracy:
             best_accuracy = accuracy
@@ -209,7 +210,7 @@ def thread(pid: int, q: mp.Queue, loggers: dict, lock: mp.Lock):
 # Build the queue
 q = mp.Queue()
 for seed in range(num_seeds):
-	for num_atrs in (3,):
+	for num_atrs in (1, 2, 3):
 		q.put_nowait((seed, num_atrs))
 
 print("Using", num_threads, "threads.")
@@ -230,5 +231,5 @@ for th in threads:
 
 print("Finished")
 
-with open("./data/wcst.dat", 'wb') as f:
+with open("./data/wcst_long2.dat", 'wb') as f:
     pickle.dump(dict(loggers), f)
