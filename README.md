@@ -4,6 +4,10 @@ This research introduces a new neurobiologically-inspired deep learning framewor
 
 The paper is available on IEEE Xplore: [A Neurobiologically-inspired Framework for Autonomous Context Learning](https://ieeexplore.ieee.org/document/9643379)
 
+## Dependencies
+
+The notebooks used within this repository depend on `tf_utils`, a small set of commonly used utilities across the different research projects here: https://github.com/DLii-Research/tf-utils.
+
 ## Citation
 
 If you find our work to be useful, please consider citing us:
