@@ -12,7 +12,7 @@ def train_step(model, batch):
     return context_grads, loss
 
 def make_train_function(eager=False):
-    def dist_train_step(model, batch, strategy):
+    def dist_train_step(strategy, model, batch):
         grads, losses = strategy.run(train_step, args=(model, batch,))
 
         # Reduce the gradients and add context loss to the model
