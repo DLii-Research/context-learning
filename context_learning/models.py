@@ -2,14 +2,14 @@ import tensorflow as tf
 import tensorflow.keras as keras
 from keras.engine import data_adapter
 
-from .layers import ContextLayer
+from .layers import ContextLayerBase
 
 class ContextModelBase(keras.Model):
     def __init__(self, *args, retry_fit=True, verbose=0, **kwargs):
         super(ContextModelBase, self).__init__(*args, **kwargs)
         self.retry_fit = retry_fit
         self.verbose = verbose
-        self.context_layer_map = [i for i, l in enumerate(self.layers) if isinstance(l, ContextLayer)]
+        self.context_layer_map = [i for i, l in enumerate(self.layers) if isinstance(l, ContextLayerBase)]
         self.context_gradient_map = self._build_gradient_map()
         self.num_context_layers = tf.constant(len(self.context_layer_map))
         self.prev_epoch = tf.Variable(-1, dtype=tf.int32, trainable=False, name="Previous Epoch")
@@ -23,7 +23,7 @@ class ContextModelBase(keras.Model):
         gradient_map = []
         index = 0
         for i, layer in enumerate(self.layers):
-            if isinstance(layer, ContextLayer):
+            if isinstance(layer, ContextLayerBase):
                 # Offset if we can use the bias weight
                 offset = int(self.layers[i + 1].use_bias)
                 
@@ -74,7 +74,7 @@ class ContextModelBase(keras.Model):
         # for layer_id in self.context_layer_map:
         #     self.layers[layer_id].restore()
             
-    def perform_epoch(self, epoch, absorb=True, context_map=None):
+    def perform_epoch(self, epoch, absorb=True):
         def begin_epoch():
             self.prev_epoch.assign(epoch)
             self.backup()
@@ -83,8 +83,7 @@ class ContextModelBase(keras.Model):
             switched = False
             for i, layer_id in enumerate(self.context_layer_map):
                 layer = self.layers[layer_id]
-                to_context = context_map[i] if context_map is not None else -1
-                switched = tf.logical_or(layer.update_and_switch(epoch, absorb, to_context), switched)
+                switched = tf.logical_or(layer.update_and_switch(epoch, absorb), switched)
                 layer.clear_observed_loss()
             tf.cond(switched, self.restore, tf.no_op)
             return switched

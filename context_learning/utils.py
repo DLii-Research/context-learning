@@ -22,3 +22,10 @@ def circular_conv(x, y):
     x = tf.cast(x, tf.complex64)
     y = tf.cast(y, tf.complex64)
     return tf.math.real(tf.signal.ifft(tf.signal.fft(x)*tf.signal.fft(y)))
+
+def circular_conv_power(x, y, p):
+    """Calculate the circular convolution between a vector and an HRR raised to the specified power"""
+    x = tf.cast(x, tf.complex64)
+    y = tf.cast(y, tf.complex64)
+    p = tf.cast(p, tf.complex64)
+    return tf.math.real(tf.signal.ifft(tf.signal.fft(x)*tf.signal.fft(y)**p))
