@@ -1,219 +1,185 @@
+import numpy as np
 import tensorflow as tf
 import tensorflow.keras as keras
+from keras.utils import layer_utils
 
-from . utils import hrr, hrrs, circular_conv, circular_conv_power
+from .utils import hrr, circular_conv_power
 
 class ContextLayerBase(keras.layers.Layer):
-    def __init__(self, switch_threshold, num_contexts=1, atr_size=None, switch_delay=0, auto_switch=True,
-                 learn_rate=0.5, switch_init=None, init_mul=1.0, init_loss=None, verbose=0):
-        super(ContextLayerBase, self).__init__(self)
+    def __init__(self,
+                 switch_threshold=-np.inf,
+                 add_threshold=-np.inf,
+                 num_contexts=1,
+                 max_contexts=None,
+                 learn_rate=0.5,
+                 expected_loss_init=None,
+                 verbose=0):
+        super(ContextLayerBase, self).__init__()
         
-        self.switch_init = switch_init
-        self.init_mul = init_mul
-        self.init_loss = init_loss
-        self.learn_rate = learn_rate
         self.verbose = verbose
         
+        # Indicate the maximum number of contexts that can be allocated
+        self.max_contexts = max_contexts
+        
+        # Track the number of contexts available
+        self.num_contexts = tf.Variable(num_contexts, dtype=tf.int32, trainable=False, name="Number of Contexts")
+        
         # Contextualization
-        self.num_contexts = num_contexts
-        self.atr_size = atr_size
-        self.switch_delay = switch_delay
-        self.project = None
-        self.hot_context = tf.Variable(0, name="Hot Context", trainable=False, dtype=tf.int32)
+        self.context = tf.Variable(0, dtype=tf.int32, trainable=False, name="Active Context")
         
-        # Switching mechanism
-        self.auto_switch = auto_switch
-        self.context_losses = tf.Variable(tf.zeros(num_contexts), dtype=tf.float32, trainable=False, name="Context Losses")
+        # Switching Mechanism
         self.switch_threshold = tf.Variable(switch_threshold, dtype=tf.float32, trainable=False, name="Switch Threshold")
-        self.delayed_epochs = tf.Variable(switch_delay, dtype=tf.int32, trainable=False, name="Delayed Epochs")
-        self.epoch_switched = tf.Variable(-1, dtype=tf.int32, trainable=False, name="Epoch Switched")
-        self.num_seq_switches = tf.Variable(0, dtype=tf.int32, trainable=False, name="Sequential Switches")
-        self.delta = tf.Variable(0.0, dtype=tf.float32, trainable=False, name="Loss Delta")
-        self.delta_switched = tf.Variable(0.0, dtype=tf.float32, trainable=False, name="Delta Switched")
+        self.add_threshold = tf.Variable(add_threshold, dtype=tf.float32, trainable=False, name="Add Threshold")
+        self.learn_rate = tf.Variable(learn_rate, dtype=tf.float32, trainable=False, name="Learn Rate")
+        self.expected_losses = tf.Variable([np.inf], dtype=tf.float32, trainable=False, name="Expected losses", shape=tf.TensorShape(None))
+        self.observed_loss = tf.Variable(0.0, dtype=tf.float32, trainable=False, name="Observed loss")
+        self.delta = tf.Variable(0.0, dtype=tf.float32, trainable=False, name="Context Delta")
         
-        # Track observed losses for each context (used to compute deltas and find best-fit contexts)
-        self.observed_losses = tf.Variable(tf.zeros(num_contexts), dtype=tf.float32, trainable=False, name="Observed Loss Values")
-        self.losses_initialized = tf.Variable(tf.zeros(num_contexts, dtype=tf.int8), dtype=tf.int8, trainable=False, name="Initialized Loss Values") # bool doesn't work yet...
+        # Supply an explicit initial loss value
+        self.expected_loss_init = lambda: expected_loss_init or self.observed_loss
         
-    def build(self, input_shape):
-        if self.atr_size is not None:
-            self.project = keras.layers.Dense(self.atr_size)
-        else:
-            self.atr_size = input_shape[-1]
-    
-    def call(self, x):
-        if self.project is not None:
-            x = self.project(x)
-        return self.contextualize(x)
-    
-    def contextualize(self, x):
+        # Keep track of sequential switches to determine when a new context should be added or best-fit used
+        self.num_sequential_switches = tf.Variable(0, dtype=tf.int32, trainable=False, name="Number of Sequencial Switches")
+        
+        # Track the best-fit context over sequential switches
+        self.best_fit_context = tf.Variable(0, dtype=tf.int32, trainable=False, name="Best-fit Context")
+        self.best_fit_context_delta = tf.Variable(0.0, dtype=tf.float32, trainable=False, name="Best-fit Context Delta")
+        
+    def call(self, x, training=None):
         raise NotImplemented()
-    
-    def update_and_switch(self, epoch, absorb):
-        return tf.cond(self.should_switch(epoch), lambda: self._switch(epoch, absorb), lambda: self._update(epoch, absorb))
         
-    def should_switch(self, epoch):
-        if not self.auto_switch:
-            return False
-        return tf.logical_and(
-            self.delayed_epochs <= 0,
-            tf.logical_and(
-                self.losses_initialized[self.hot_context] == 1,
-                self.compute_context_delta() < self.switch_threshold
-            ))
-    
-    def _switch(self, epoch, absorb):
-        # Before the switch...
-        self.on_before_switch(epoch)
-        
-        # Count the switches
-        self.num_seq_switches.assign_add(1)
-        self.epoch_switched.assign(epoch)
-        
-        # Switch contexts and return the result
-        self.switch_contexts(absorb)
-        
-        # Always return true to indicate a switch occurred
-        return True
-        
-    def switch_contexts(self, absorb):
-        def switch_to_best_fit():
-            best_fit = self.find_best_fit_context()
-            self.set_context(best_fit)
-            self.update_context_loss(self.observed_losses[self.hot_context], absorb)
-            if self.verbose > 0:
-                tf.print("Switching to best-fit context:", best_fit)
-        
-        def switch_to_next():
-            self.next_context()
-            if self.verbose == 2:
-                tf.print("\nSwitched to context:", self.hot_context)
-            tf.cond(not self.losses_initialized[self.hot_context], self.reset_switch_delay, tf.no_op)
-        
-        # If we've tried all contexts and none fits well, use the best-fit. Otherwise, use the next context
-        tf.cond(self.num_seq_switches >= self.num_contexts, switch_to_best_fit, switch_to_next)
-        
-    
-    def _update(self, epoch, absorb):
-        def update_counters():
-            # Decrement the delayed epochs counter on absorbing states
-            tf.cond(self.delayed_epochs > 0, lambda: self.delayed_epochs.assign_sub(1), tf.no_op)
-            # Reset the sequence counter on absorbing states
-            tf.cond(self.num_seq_switches != 0, lambda: self.num_seq_switches.assign(0), tf.no_op)
-            
-        # Before the context loss value is updated...
-        # This is a sort of hack to skip updating delta
-        # traces after a best-fit was found
-        tf.cond(epoch != self.epoch_switched, self.on_before_update, tf.no_op)
-        
-        # Update the context-loss value
-        self.update_context_loss(self.observed_loss(), absorb)
-        
-        # If obsorbing, update counters
-        tf.cond(absorb, update_counters, tf.no_op)
-        return False # Always return false to indicate no switch
-    
-    def observed_loss(self):
-        return self.observed_losses[self.hot_context]
-    
-    def context_loss(self):
-        return self.context_losses[self.hot_context]
-    
-    def compute_context_delta(self):
-        return self.context_loss() - self.observed_loss()
+    def count_params(self):
+        params = layer_utils.count_params(
+            [w for w in self.weights if hasattr(w, "shape") and w.shape.dims != None])
+        params += self.num_contexts.numpy() # length of expected_losses tensor
+        return params
     
     def add_observed_loss(self, observed_loss):
         loss = self.compute_observed_error(observed_loss)
-        # indices = [tf.expand_dims(self.hot_context, 0)]
-        self.observed_losses.scatter_nd_add([[self.hot_context]], loss)
+        self.observed_loss.assign_add(loss)
         
-    def clear_observed_loss(self):
-        # indices = [tf.expand_dims(self.hot_context, 0)]
-        self.observed_losses.scatter_nd_update([[self.hot_context]], [0.0])
-                
+    def update(self, absorb, is_retry):
+        
+        # Compute the context delta
+        self.delta.assign(self.expected_loss() - self.observed_loss)
+        
+        # Switch or update
+        should_switch = self.should_switch()
+        tf.cond(
+            should_switch,
+            self._switch,
+            lambda: self._update(absorb, is_retry))
+        
+        # Reset the observed loss
+        self.observed_loss.assign(0.0)
+        
+        # Return the result of the switch
+        return should_switch
+    
+    # Context Switching ----------------------------------------------------------------------------
+    
+    def should_switch(self):
+        return tf.less_equal(self.delta, self.switch_threshold)
+    
+    def should_add_context(self):
+        # If no add threshold is specified, no adding allowed
+        can_add = True if self.max_contexts is None else tf.less(self.num_contexts, self.max_contexts)
+        return tf.logical_and(
+            can_add,
+            tf.less_equal(
+                self.best_fit_context_delta,
+                self.add_threshold))
+    
+    def _switch(self):
+        if self.verbose >= 2:
+            tf.print("\nSwitching contexts...")
+        def force_switch():
+            if self.verbose >= 2:
+                tf.print("Force Switching; context delta:", self.delta, "best fit delta", "")
+            tf.cond(
+                self.should_add_context(),
+                self._switch_to_new_context,
+                self._switch_to_best_fit_context)
+        def update_best_fit_context():
+            self.best_fit_context.assign(self.context)
+            self.best_fit_context_delta.assign(self.delta)
+        tf.cond(
+            tf.logical_or(
+                tf.equal(self.num_sequential_switches, 0),
+                tf.less(self.delta, self.best_fit_context_delta)),
+            update_best_fit_context,
+            tf.no_op)
+        tf.cond(
+            tf.less(self.num_sequential_switches, self.num_contexts - 1),
+            self._switch_to_next_context,
+            force_switch)
+        return True
+        
+    def _switch_to_next_context(self):
+        self.set_context((self.context + 1) % self.num_contexts)
+        self.num_sequential_switches.assign_add(1)
+        
+    def _switch_to_best_fit_context(self):
+        if self.verbose >= 1:
+            tf.print("Switching to best-fit context:", self.best_fit_context)
+        self.set_context(self.best_fit_context)
+        self.expected_losses.scatter_nd_update([[self.context]], [self.observed_loss])
+    
+    def _switch_to_new_context(self):
+        if self.verbose >= 1:
+            tf.print("\nSwitching to a new context:", self.num_contexts)
+        self.add_context()
+        self.set_context(self.num_contexts - 1)
+    
+    # Updating -------------------------------------------------------------------------------------
+    
+    def _update(self, absorb, is_retry):
+        
+        # Reset the number of sequential switches on absorbing states
+        tf.cond(
+            absorb,
+            lambda: self.num_sequential_switches.assign(0),
+            tf.no_op)
+        
+        # Update the expected loss
+        loss = tf.cond(
+            tf.math.is_inf(self.expected_loss()),
+            self.expected_loss_init,
+            lambda: self.expected_loss() + self.learn_rate*(self.observed_loss - self.expected_loss()))
+        self.expected_losses.scatter_nd_update([[self.context]], [loss])
+        
+        return False # No switch occurred
+        
+    # Computations ---------------------------------------------------------------------------------
+        
     def compute_observed_error(self, observed_loss):
-        return keras.losses.mean_squared_error(tf.zeros_like(observed_loss), observed_loss)
+        error = keras.losses.mean_squared_error(tf.zeros_like(observed_loss), observed_loss)
+        return error[0]
     
-    def set_context_loss(self, context_loss, absorb):
-        self.context_losses.scatter_nd_update([[self.hot_context]], [context_loss])
-        tf.cond(not self.losses_initialized[self.hot_context] and absorb, lambda: self.losses_initialized.scatter_nd_update([[self.hot_context]], [1]), tf.no_op)
-    
-    def update_context_loss(self, context_loss, absorb, switched=False):
-        def init_context_loss():
-            init_loss = self.init_mul*context_loss
-            if self.init_loss is not None:
-                init_loss = tf.maximum(init_loss, self.init_loss)
-            # tf.print("Initializing context loss...")
-            self.set_context_loss(init_loss, absorb)
-            
-        def update_context_loss():
-            direct_loss = lambda: context_loss
-            delta_loss = lambda: self.context_loss() + self.learn_rate*(self.observed_loss() - self.context_loss())
-            loss = tf.cond(switched, direct_loss, delta_loss)
-            # tf.print("Updating context loss...")
-            self.set_context_loss(loss, absorb)
+    def expected_loss(self):
+        return self.expected_losses[self.context]
         
-        tf.cond(not self.losses_initialized[self.hot_context], init_context_loss, update_context_loss)
-    
-    def next_context(self):
-        self.hot_context.assign((self.hot_context + 1) % self.num_contexts)
+    # Context Management ---------------------------------------------------------------------------
+        
+    def add_context(self):
+        if self.max_contexts is not None:
+            tf.debugging.assert_less(self.num_contexts, self.max_contexts, message="Context limit reached, can't add")
+        self.num_contexts.assign_add(1)
+        self.expected_losses.assign(tf.concat([self.expected_losses, [np.inf]], axis=0))
         
     def set_context(self, context):
-        self.hot_context.assign(context)
+        tf.debugging.assert_non_negative(context, message="Context must be positive")
+        tf.debugging.assert_less(context, self.num_contexts, message="Context out of range")
+        self.context.assign(context)
         
-    def find_best_fit_context(self):
-        return tf.argmax((self.context_losses - self.observed_losses)[:self.num_contexts], output_type=tf.int32)
-    
-    def on_before_switch(self, epoch):
-        def update_delta():
-            delta = self.compute_context_delta()
-            self.delta_switched.assign(delta)
-            self.delta.assign(delta)
-        tf.cond(epoch != self.epoch_switched, update_delta, tf.no_op)
-    
-    def on_before_update(self):
-        def update_delta():
-            delta = self.compute_context_delta()
-            self.delta.assign(delta)
-        tf.cond(self.losses_initialized[self.hot_context], update_delta, tf.no_op)
         
-    def reset_switch_delay(self):
-        if self.switch_delay == 0:
-            return
-        self.delayed_epochs.assign(self.switch_delay)
-        if self.verbose:
-            tf.print(f"\n[{self.name}] Unitialized context: Context switching disabled for {self._switch_delay} absorbing epochs.")
-            
-            
-class ContextLayerLogHrr(ContextLayerBase):
+class ContextLayer(ContextLayerBase):
     def __init__(self, *args, **kwargs):
-        super(ContextLayerLogHrr, self).__init__(*args, **kwargs)
-        
-        # Contextualization
-        self.num_atrs = int(np.ceil(np.log2(self.num_contexts)))
+        super(ContextLayer, self).__init__(*args, **kwargs)
         
     def build(self, input_shape):
-        super(ContextLayerLogHrr, self).build(input_shape)
-        self.atrs = hrrs(self.atr_size, self.num_atrs)
+        super(ContextLayer, self).build(input_shape)
+        self.context_hrr = hrr(input_shape[1])
     
-    def contextualize(self, x):
-        result = x
-        for i in range(self.num_atrs):
-            result = tf.cond(tf.bitwise.bitwise_and(self.hot_context, (1 << i)) > 0, lambda: self.convolve(i, result), lambda: result)
-        return result
-    
-    def convolve(self, i, x):
-        atr = tf.gather(self.atrs, i)
-        return circular_conv(atr, x)
-    
-    
-class ContextLayerConvPower(ContextLayerBase):
-    def __init__(self, *args, **kwargs):
-        super(ContextLayerConvPower, self).__init__(*args, **kwargs)
-        
-    def build(self, input_shape):
-        super(ContextLayerConvPower, self).build(input_shape)
-        self.context_hrr = hrr(self.atr_size)
-    
-    def contextualize(self, x):
-        return circular_conv_power(x, self.context_hrr, self.hot_context)
+    def call(self, x, training=None):
+        return circular_conv_power(x, self.context_hrr, self.context)

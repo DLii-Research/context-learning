@@ -11,8 +11,13 @@ class ContextModelBase(keras.Model):
         self.verbose = verbose
         self.context_layer_map = [i for i, l in enumerate(self.layers) if isinstance(l, ContextLayerBase)]
         self.context_gradient_map = self._build_gradient_map()
-        self.num_context_layers = tf.constant(len(self.context_layer_map))
+        self.context_layers = [self.layers[i] for i in self.context_layer_map]
+        self.num_context_layers = tf.constant(len(self.context_layers))
         self.prev_epoch = tf.Variable(-1, dtype=tf.int32, trainable=False, name="Previous Epoch")
+        self.is_retry = tf.Variable(False, dtype=tf.bool, trainable=False, name="Is Retry")
+        
+        # Store the context deltas at each epoch
+        self.context_deltas = tf.Variable(tf.zeros(self.num_context_layers), dtype=tf.float32, trainable=False, name="Context Deltas")
         
         # Set context layer verbosity
         for layer_id in self.context_layer_map:
@@ -25,12 +30,7 @@ class ContextModelBase(keras.Model):
         for i, layer in enumerate(self.layers):
             if isinstance(layer, ContextLayerBase):
                 # Offset if we can use the bias weight
-                offset = int(self.layers[i + 1].use_bias)
-                
-                # If there is a built-in projection layer, offset appropriately
-                if layer.project is not None:
-                    offset += len(layer.project.trainable_variables)
-                
+                offset = int(self.layers[i + 1].use_bias)                
                 gradient_map.append(index + offset)
             index += len(layer.trainable_variables)
         return gradient_map
@@ -60,34 +60,33 @@ class ContextModelBase(keras.Model):
             observed_loss = self._calc_context_loss(i, grads)
             self.layers[self.context_layer_map[i]].add_observed_loss(observed_loss)
             
-    # def clear_observed_loss(self):
-    #     for layer_id in self.context_layer_map:
-    #         self.layers[layer_id].clear_observed_loss()
-            
     def backup(self):
         self._backup = keras.backend.batch_get_value(self.trainable_weights)
-        # for layer_id in self.context_layer_map:
-        #     self.layers[layer_id].backup()
         
     def restore(self):
         keras.backend.batch_set_value(zip(self.trainable_weights, self._backup))
-        # for layer_id in self.context_layer_map:
-        #     self.layers[layer_id].restore()
             
     def perform_epoch(self, epoch, absorb=True):
         def begin_epoch():
             self.prev_epoch.assign(epoch)
+            self.is_retry.assign(False)
             self.backup()
             return True
         def update_and_switch():
             switched = False
-            for i, layer_id in enumerate(self.context_layer_map):
-                layer = self.layers[layer_id]
-                switched = tf.logical_or(layer.update_and_switch(epoch, absorb), switched)
-                layer.clear_observed_loss()
+            for layer in self.context_layers:
+                switched = tf.logical_or(layer.update(absorb, self.is_retry), switched)
+            if not self.is_retry:
+                self.context_deltas.assign([layer.delta for layer in self.context_layers])
             tf.cond(switched, self.restore, tf.no_op)
+            self.is_retry.assign(True)
             return switched
         return tf.cond(self.prev_epoch != epoch, begin_epoch, lambda: tf.logical_and(update_and_switch(), self.retry_fit))
+    
+    @property
+    def non_trainable_weights(self):
+        weights = super(ContextModelBase, self).non_trainable_weights
+        return [w for w in weights if hasattr(w, "shape") and w.shape.dims != None]
     
 class ContextModel(ContextModelBase):
     pass
